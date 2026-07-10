@@ -2,25 +2,429 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /users/{document} {
-      allow create: if request.auth.uid == document;
-      allow read: if request.auth.uid == document;
-      allow write: if request.auth.uid == document;
-      allow delete: if request.auth.uid == document;
+
+    function isSignedIn() {
+      return request.auth != null;
     }
 
+    // isAdmin is a manually-set flag on the user's own doc (see
+    // users/{uid} below) — never settable via the client SDK, only from
+    // the Firebase Console, so this can't be self-granted.
+    function isAdmin() {
+      return isSignedIn() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
 
-    // This rule allows anyone with your Firestore database reference to view, edit,
-    // and delete all data in your Firestore database. It is useful for getting
-    // started, but it is configured to expire after 30 days because it
-    // leaves your app open to attackers. At that time, all client
-    // requests to your Firestore database will be denied.
+    // Zero-padded 'YYYY-MM-DD' for the server's request time (UTC) — used by the
+    // post-throttle counter so a client can't fake the day to reset its quota.
+    function todayStr() {
+      return string(request.time.year()) + '-' +
+        (request.time.month() < 10 ? '0' + string(request.time.month()) : string(request.time.month())) + '-' +
+        (request.time.day() < 10 ? '0' + string(request.time.day()) : string(request.time.day()));
+    }
+
+    // ─── USERS ───
+    // Profile is private to its owner. isAdmin can never be set or changed
+    // by the user themselves — it must stay whatever it already was (or
+    // absent/false on creation).
+    // isAdmin and plan are both privileged: settable only from the Console /
+    // by an admin, never self-upgradable. create must not self-grant either;
+    // 'plan' may only be absent or 'free' at creation. This is what keeps the
+    // dormant paid tier from being self-activated to bypass the contact gate.
+    match /users/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow create: if isSignedIn() && request.auth.uid == uid &&
+        (!('isAdmin' in request.resource.data) || request.resource.data.isAdmin == false) &&
+        (!('plan' in request.resource.data) || request.resource.data.plan == 'free');
+      // .get(key, default) guards against docs written before 'plan' existed
+      // (kEarlyAccessMode never writes it) — a bare .plan on such a doc
+      // errors the whole expression and silently denies the update, which is
+      // exactly what was blocking notifyByEmail/notifyOnNewMessage merges.
+      allow update: if isSignedIn() && request.auth.uid == uid &&
+        request.resource.data.get('isAdmin', false) == resource.data.get('isAdmin', false) &&
+        request.resource.data.get('plan', 'free') == resource.data.get('plan', 'free');
+      allow delete: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    // ─── COMPANIES ───
+    // Public read (browsed by anonymous visitors and shared links). Doc id
+    // is always the owner's uid by convention (see CompanyService). Admins
+    // moderate verification/flagging. Any signed-in user may additionally
+    // touch just ratingSum/ratingCount — needed when CompanyService
+    // .submitRating() un-counts someone's own prior approved rating before
+    // it goes back to pending for re-review; verifying "they really had an
+    // approved rating here" would need an extra read inside the rule, so
+    // this is intentionally narrow (those two fields only) rather than that.
     //
-    // Make sure to write security rules for your app before that time, or else
-    // all client requests to your Firestore database will be denied until you Update
-    // your rules
-    match /{document=**} {
-      allow read, write: if request.time < timestamp.date(2026, 7, 7);
+    // verificationStatus and contentFlagged are deliberately excluded from
+    // the owner's self-update — confirmed by live test that an owner could
+    // otherwise write verificationStatus: 'verified' or flip contentFlagged
+    // to false directly via the SDK, bypassing admin review entirely. The
+    // app's own create/edit flow never sets verificationStatus to anything
+    // but 'none'/'pending', and only ever moves contentFlagged false→true
+    // (see company_profile_screen.dart) — both are otherwise admin-only.
+    //
+    // ratingSum/ratingCount are the denormalized review aggregate. They are
+    // ADMIN-ONLY: never writable by the owner (they'd inflate their own
+    // score) nor by any other signed-in user (they'd forge a competitor's).
+    // The aggregate is recomputed admin-side from approved companyRatings
+    // docs on every moderation action (see AdminService). The owner's own
+    // profile update must therefore leave both fields exactly as they were —
+    // a normal profile save (toFirestoreForUpdate) never touches them, so
+    // this pin is transparent to the app and only blocks tampering.
+    match /companies/{companyId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.auth.uid == companyId
+        && request.resource.data.verificationStatus in ['none', 'pending']
+        && request.resource.data.contentFlagged == false;
+      allow update: if isAdmin()
+        || (isSignedIn() && request.auth.uid == companyId
+            && request.resource.data.verificationStatus == resource.data.verificationStatus
+            && request.resource.data.ratingSum == resource.data.ratingSum
+            && request.resource.data.ratingCount == resource.data.ratingCount
+            && (request.resource.data.contentFlagged == resource.data.contentFlagged
+                || (request.resource.data.contentFlagged == true && resource.data.contentFlagged == false)));
+      allow delete: if false;
     }
+
+    // ─── CAPACITIES (anonymized public posts) ───
+    // Public read, but the doc carries NO poster identity (no companyId/name/
+    // contact) — identity lives only in capacityOwners below. Because the
+    // post has no companyId, ownership for edits is resolved through the
+    // locked owner sidecar via get(). contentFlagged may only move false→true
+    // on a non-admin write. Any signed-in visitor can bump exactly one
+    // engagement counter; viewCount also works signed-out.
+    //
+    // create is just "signed in" — the paired capacityOwners doc (written in
+    // the same batch) is what binds the post to its real owner; rules can't
+    // cross-validate batch siblings (get() sees pre-batch state), and an
+    // orphan anonymous post with no owner is contactless and harmless.
+    match /capacities/{capacityId} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      allow update: if isAdmin()
+        || (isSignedIn()
+            && exists(/databases/$(database)/documents/capacityOwners/$(capacityId))
+            && get(/databases/$(database)/documents/capacityOwners/$(capacityId)).data.posterCompanyId == request.auth.uid
+            && (request.resource.data.contentFlagged == resource.data.contentFlagged
+                || (request.resource.data.contentFlagged == true && resource.data.contentFlagged == false)))
+        || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount'])
+        || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['favoriteCount']))
+        || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['interestCount']));
+      allow delete: if false;
+    }
+
+    // ─── CAPACITY OWNERS (locked identity sidecar) ───
+    // The ONLY place a post's poster identity + contact lives. Released by
+    // these rules — never by the client — to the owner, an admin, or a
+    // requester holding a *granted* contact request for this exact post.
+    // This is the security backbone of the anonymized-post model: an
+    // ungranted client physically cannot read it.
+    match /capacityOwners/{postId} {
+      allow read: if isSignedIn() && (
+           resource.data.posterCompanyId == request.auth.uid
+        || isAdmin()
+        || ( exists(/databases/$(database)/documents/contact_requests/$(request.auth.uid + '_' + postId))
+          && get(/databases/$(database)/documents/contact_requests/$(request.auth.uid + '_' + postId)).data.status == 'granted' )
+      );
+      // Owner creates their own sidecar at post time; admin may also create
+      // one (needed to migrate pre-existing posts — including demo companies
+      // that have no login — into the split model).
+      allow create: if isSignedIn() &&
+        (request.resource.data.posterCompanyId == request.auth.uid || isAdmin());
+      allow update: if isAdmin() || (isSignedIn() && resource.data.posterCompanyId == request.auth.uid);
+      allow delete: if false;
+    }
+
+    // ─── CREDITS (Vermittlung wallets) ───
+    // One wallet per company at credits/{companyId}. Owner-only read. The quota
+    // is pinned to 20 during Early Access (keep in sync with kEarlyAccessQuota).
+    // Two legal writes: (a) SPEND — remaining drops by exactly 1 within the same
+    // period; (b) monthly RESET — only into the *real* current month, topping
+    // remaining back to the quota. The current-month check ties a reset to
+    // request.time, so a client can't fake a new period to top up mid-month.
+    // Admins may adjust freely (founder approving a screened request debits it).
+    match /credits/{companyId} {
+      // Owner reads their own wallet; admin may also read it — the founder needs
+      // to see the requester's balance when approving a screened request
+      // (approveGrant reads the wallet before deciding whether to debit it).
+      allow read: if isSignedIn() && (request.auth.uid == companyId || isAdmin());
+      allow create: if isSignedIn() && request.auth.uid == companyId
+        && request.resource.data.quota == 20
+        && request.resource.data.remaining == request.resource.data.quota
+        && request.resource.data.period ==
+             string(request.time.year()) + '-' +
+             (request.time.month() < 10 ? '0' + string(request.time.month()) : string(request.time.month()));
+      allow update: if isAdmin()
+        || (isSignedIn() && request.auth.uid == companyId
+            && request.resource.data.quota == resource.data.quota
+            && (
+                 // Spend one credit, same period.
+                 ( request.resource.data.remaining == resource.data.remaining - 1
+                   && request.resource.data.remaining >= 0
+                   && request.resource.data.period == resource.data.period )
+                 // Lazy monthly reset into the actual current month.
+              || ( request.resource.data.period != resource.data.period
+                   && request.resource.data.remaining == request.resource.data.quota
+                   && request.resource.data.period ==
+                        string(request.time.year()) + '-' +
+                        (request.time.month() < 10 ? '0' + string(request.time.month()) : string(request.time.month())) )
+            ));
+      allow delete: if false;
+    }
+
+    // ─── CONTACT REQUESTS (credit-based Vermittlung) ───
+    // Deterministic id: {requesterCompanyId}_{postId}. Read by the requester,
+    // an admin, OR the poster of the referenced post (via the locked sidecar).
+    // A VERIFIED requester unlocks instantly: the only way to create a 'granted'
+    // request is to spend a credit in the SAME batch — enforced with getAfter on
+    // the wallet, so a client can never self-grant a free reveal. An UNVERIFIED
+    // requester can only create 'pending_review' (founder screens + grants).
+    match /contact_requests/{reqId} {
+      // The deterministic id is {requesterCompanyId}_{postId}. The requester's
+      // own flow does a get() on this id to see whether they've already sent a
+      // request — and on the FIRST request that doc doesn't exist yet. Without
+      // the resource==null branch, `resource.data...` on a missing doc errors
+      // and the get() is denied, which is exactly what blocked "Interesse
+      // senden". A non-existent read is allowed ONLY for the caller's own id
+      // (the reqId must start with their uid), so this can't be used to probe
+      // whether some OTHER company has shown interest in a post (that would
+      // leak the private interest graph). uids/postIds contain no underscores,
+      // so split('_')[0] cleanly yields the requester id.
+      allow read: if isSignedIn() && (
+           ( resource == null && reqId.split('_')[0] == request.auth.uid )
+        || ( resource != null && (
+                resource.data.requesterCompanyId == request.auth.uid
+             || isAdmin()
+             || ( exists(/databases/$(database)/documents/capacityOwners/$(resource.data.postId))
+               && get(/databases/$(database)/documents/capacityOwners/$(resource.data.postId)).data.posterCompanyId == request.auth.uid ) ) )
+      );
+      // FREE, message-first (launch phase): anyone signed in may send a first
+      // message, always created as 'pending' (no credit, no payment). The
+      // poster then accepts/declines it (see update below).
+      allow create: if isSignedIn()
+        && request.resource.data.requesterCompanyId == request.auth.uid
+        && request.resource.data.outcome == null
+        && request.resource.data.status == 'pending';
+      allow update: if isAdmin()
+        // Requester: record the follow-up outcome on their own request.
+        || (isSignedIn() && resource.data.requesterCompanyId == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['outcome']))
+        // Poster (owns the post via the locked sidecar): accept a pending
+        // message → 'granted' (+ stamp own id, which reveals the sidecar to the
+        // requester) or decline it → 'declined'. Only status/posterCompanyId
+        // may change, and a grant must stamp the poster's own id.
+        || ( isSignedIn()
+             && resource.data.status == 'pending'
+             && exists(/databases/$(database)/documents/capacityOwners/$(resource.data.postId))
+             && get(/databases/$(database)/documents/capacityOwners/$(resource.data.postId)).data.posterCompanyId == request.auth.uid
+             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'posterCompanyId'])
+             && ( ( request.resource.data.status == 'granted'
+                    && request.resource.data.posterCompanyId == request.auth.uid )
+               || request.resource.data.status == 'declined' ) )
+        // Either party of a GRANTED connection may set THEIR OWN "we worked
+        // together" flag (only their own key, only false→true). When both are
+        // set, the onCollabConfirmed function counts the completed collaboration
+        // for both firms — mutual, so neither side can inflate its own count.
+        || ( isSignedIn()
+             && resource.data.status == 'granted'
+             && resource.data.requesterCompanyId == request.auth.uid
+             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['collabRequester'])
+             && request.resource.data.collabRequester == true )
+        || ( isSignedIn()
+             && resource.data.status == 'granted'
+             && exists(/databases/$(database)/documents/capacityOwners/$(resource.data.postId))
+             && get(/databases/$(database)/documents/capacityOwners/$(resource.data.postId)).data.posterCompanyId == request.auth.uid
+             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['collabPoster'])
+             && request.resource.data.collabPoster == true );
+      allow delete: if false;
+    }
+
+    // ─── CHATS (post-accept 1:1 messaging) ───
+    // A thread exists only for a *granted* contact request (doc id == the
+    // request id) and only its two parties may touch it. Identity is already
+    // mutual once accepted, so the thread itself needs no anonymization. The
+    // create rule resolves the request (rules get() bypasses read rules) to
+    // confirm it's granted and that BOTH real parties are the participants.
+    match /chats/{chatId} {
+      // Existing chat: only its two participants may read it. NON-existent chat:
+      // reading it (which ensureChat + the chat stream do on first open) must be
+      // allowed for the two real parties, or the thread can never be created —
+      // this is what surfaced as "keine Berechtigung" when opening a fresh chat.
+      // chatId == the contact_request id == {requesterId}_{postId}: the requester
+      // is the first segment; the poster is resolved from the locked sidecar via
+      // the postId segment. Restricting to those two means a missing-chat read
+      // can't be used to probe whether OTHER companies are connected.
+      allow read: if isSignedIn() && (
+           ( resource != null && request.auth.uid in resource.data.participants )
+        || ( resource == null
+             && chatId.split('_').size() == 2
+             && ( chatId.split('_')[0] == request.auth.uid
+               || ( exists(/databases/$(database)/documents/capacityOwners/$(chatId.split('_')[1]))
+                    && get(/databases/$(database)/documents/capacityOwners/$(chatId.split('_')[1])).data.posterCompanyId == request.auth.uid ) ) )
+      );
+      allow create: if isSignedIn()
+        && request.auth.uid in request.resource.data.participants
+        && exists(/databases/$(database)/documents/contact_requests/$(chatId))
+        && get(/databases/$(database)/documents/contact_requests/$(chatId)).data.status == 'granted'
+        && get(/databases/$(database)/documents/contact_requests/$(chatId)).data.requesterCompanyId in request.resource.data.participants
+        // Resolve the poster from the LOCKED sidecar (authoritative) rather than
+        // the request's posterCompanyId, which the self-grant flow stamps async.
+        && get(/databases/$(database)/documents/capacityOwners/$(get(/databases/$(database)/documents/contact_requests/$(chatId)).data.postId)).data.posterCompanyId in request.resource.data.participants;
+      // Participants may bump the last-message preview, never change membership.
+      allow update: if isSignedIn()
+        && request.auth.uid in resource.data.participants
+        && request.resource.data.participants == resource.data.participants;
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        // Resolve participants from the PARENT chat via get() — not the message's
+        // own resource.data. A list query (the message stream) has no
+        // participants filter, so a resource.data-based rule makes Firestore
+        // reject the whole read ("not allowed") even though single-doc creates
+        // succeed. The get() is resource-independent, so the list passes.
+        allow read: if isSignedIn()
+          && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        // senderId must be self; the message's audience must be the SAME SET as
+        // the parent chat's participants (so it can't be planted with a forged
+        // audience). Compared with hasAll+hasOnly, not ==, because the two
+        // parties build the participants list in opposite order ([me, other]) —
+        // an ordered compare denied whichever side didn't create the chat.
+        allow create: if isSignedIn()
+          && request.resource.data.senderId == request.auth.uid
+          && request.auth.uid in request.resource.data.participants
+          && request.resource.data.participants.hasAll(get(/databases/$(database)/documents/chats/$(chatId)).data.participants)
+          && request.resource.data.participants.hasOnly(get(/databases/$(database)/documents/chats/$(chatId)).data.participants);
+        allow update, delete: if false;
+      }
+    }
+
+    // ─── USER FAVORITES ───
+    // Each doc belongs to exactly one user — read/create/delete own only,
+    // never updated in place (toggling just deletes and re-creates).
+    //
+    // read also allows resource == null (the doc doesn't exist) — without
+    // that, checking "have I favorited this?" for a post you haven't
+    // favorited yet (the doc doesn't exist) fails permission-denied, since
+    // resource.data can't be compared on a null resource. That silently
+    // broke toggleFavorite() for every first-time favorite. Confirmed by
+    // live test: a get() on a non-existent userFavorites doc threw
+    // permission-denied before this fix. "Doesn't exist" leaks nothing, so
+    // this is safe — reads of another user's *existing* favorite doc are
+    // still denied by the userId check below.
+    match /userFavorites/{favId} {
+      allow read: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update: if false;
+    }
+
+    // ─── COMPANY RATINGS ───
+    // Approved reviews are public. A rater can always read/write their own
+    // rating doc, but every client-side write must leave it in 'pending' —
+    // only an admin can move it to approved/rejected. Unlike companies/
+    // capacities, ratings ARE hard-deletable — a rater can withdraw their
+    // own review, or an admin can remove one entirely — since a deleted
+    // rating's intended count contribution is reversible client-side
+    // (CompanyService.deleteRating un-counts it from the company's
+    // ratingSum/ratingCount in the same transaction if it was approved),
+    // unlike capacities/companies where history has separate trust value.
+    match /companyRatings/{ratingId} {
+      // resource == null first: getMyRatingForCompany() .get()s a rating doc
+      // that usually doesn't exist yet (most viewers haven't rated a given
+      // company). Firestore evaluates this rule even for a missing doc, and
+      // resource.data on a null resource throws — without this guard that
+      // aborts the whole OR chain (denied) instead of falling through to a
+      // clean "not found", so every not-yet-rated company view errored for
+      // any non-admin viewer.
+      allow read: if resource == null
+        || (resource.data.status == 'approved')
+        || (isSignedIn() && resource.data.raterUserId == request.auth.uid)
+        || isAdmin();
+      allow create, update: if isAdmin()
+        || (isSignedIn()
+            && request.resource.data.raterUserId == request.auth.uid
+            && request.resource.data.raterUserId != request.resource.data.companyId
+            && request.resource.data.status == 'pending');
+      allow delete: if isAdmin() || (isSignedIn() && resource.data.raterUserId == request.auth.uid);
+    }
+
+    // ─── REPORTS ───
+    // Anyone signed in can file a report; only admins can read or manage
+    // the queue.
+    match /reports/{reportId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn() && request.resource.data.reporterId == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    // ─── DEAL COUNTER ───
+    // Single shared doc handing out sequential deal numbers — only ever
+    // touched from inside CapacityService.updateStatus()'s transaction.
+    // Restricted to monotonic +1 steps (rather than any signed-in write)
+    // so the sequence can't be reset or corrupted by an arbitrary write.
+    match /counters/{counterId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.value == 1;
+      allow update: if isSignedIn() && request.resource.data.value == resource.data.value + 1;
+      allow delete: if false;
+    }
+
+    // ─── POST THROTTLE (daily per-company cap) ───
+    // One counter per company at postCounts/{uid}: {day:'YYYY-MM-DD', count}.
+    // The post-create batch (see CapacityService.createCapacity) writes this in
+    // the SAME batch as the new post; if the increment would exceed the daily
+    // cap the update is denied, and because batches are atomic the whole post is
+    // rejected too. This keeps the throttle enforcement here without touching
+    // the capacities/capacityOwners create rules (so admin/onboarding paths are
+    // unaffected). Cap = 10/day (keep in sync with kMaxPostsPerDay). The day is
+    // pinned to request.time so a client can't backdate to reset its quota.
+    match /postCounts/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow create: if isSignedIn() && request.auth.uid == uid
+        && request.resource.data.day == todayStr()
+        && request.resource.data.count == 1;
+      allow update: if isSignedIn() && request.auth.uid == uid
+        && request.resource.data.day == todayStr()
+        && (
+             // Same day: increment by exactly 1, capped.
+             ( resource.data.day == todayStr()
+               && request.resource.data.count == resource.data.count + 1
+               && request.resource.data.count <= 10 )
+             // New day: reset to 1.
+          || ( resource.data.day != todayStr()
+               && request.resource.data.count == 1 )
+        );
+      allow delete: if false;
+    }
+
+    // ─── SAVED SEARCHES (retention) ───
+    // A user's persisted feed filters — private to the owner. read allows the
+    // resource==null case (a get on a not-yet-created doc) for consistency with
+    // the other own-doc collections, though the app only ever queries by ownerId.
+    match /savedSearches/{searchId} {
+      allow read: if isSignedIn() && (resource == null || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.ownerId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow update: if false;
+    }
+
+    // ─── NOTIFICATIONS ───
+    // One doc per (event, recipient); admin events fan out to one doc per
+    // admin, each independently readable/markable only by that admin.
+    // Everything except `read` is server-authored via the Admin SDK (Cloud
+    // Functions bypass rules entirely) — the client's only legal write is
+    // flipping its own doc's `read` to true.
+    match /notifications/{notifId} {
+      allow read: if isSignedIn() && resource.data.recipientId == request.auth.uid;
+      allow create: if false;
+      allow update: if isSignedIn()
+        && resource.data.recipientId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      allow delete: if false;
+    }
+
+    // Everything else (including the unused legacy `favorites` collection)
+    // is closed by default.
   }
 }

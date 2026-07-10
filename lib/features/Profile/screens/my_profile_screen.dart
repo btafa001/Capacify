@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/services/auth_provider.dart';
 import '../../../shared/widgets/custom_text_field.dart';
 import '../../settings/screens/settings_screen.dart';
 import '../../../core/localization/app_localizations.dart';
+import '../../../core/services/analytics_service.dart';
+import '../../../core/utils/validators.dart';
 
 class MyProfileScreen extends ConsumerStatefulWidget {
   const MyProfileScreen({super.key});
@@ -20,7 +23,81 @@ class _MyProfileScreenState
   final _lastNameController = TextEditingController();
   final _jobTitleController = TextEditingController();
   final _phoneController = TextEditingController();
+  bool _isLoading = true;
   bool _isSaving = false;
+  int? _joinYear;
+
+  @override
+  void initState() {
+    super.initState();
+    AnalyticsService.logScreenView('MyProfile');
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile() async {
+    try {
+      final user = ref.read(authStateProvider).value;
+      if (user == null) return;
+
+      final data = await ref.read(authServiceProvider).getUserProfile(user.uid);
+      if (data != null) {
+        _firstNameController.text = data['firstName'] as String? ?? '';
+        _lastNameController.text = data['lastName'] as String? ?? '';
+        _jobTitleController.text = data['jobTitle'] as String? ?? '';
+        _phoneController.text = data['phone'] as String? ?? '';
+        final createdAt = data['createdAt'];
+        if (createdAt is Timestamp) {
+          _joinYear = createdAt.toDate().year;
+        }
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _saveProfile() async {
+    final l = AppLocalizations.of(context);
+    final user = ref.read(authStateProvider).value;
+    if (user == null) return;
+
+    final phoneError = Validators.phone(_phoneController.text, l);
+    if (phoneError != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(phoneError), backgroundColor: AppColors.error),
+      );
+      return;
+    }
+
+    setState(() => _isSaving = true);
+    try {
+      await ref.read(authServiceProvider).updateUserProfile(
+            uid: user.uid,
+            firstName: _firstNameController.text.trim(),
+            lastName: _lastNameController.text.trim(),
+            phone: _phoneController.text.trim(),
+            jobTitle: _jobTitleController.text.trim(),
+          );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(l.profileSavedSuccess),
+            backgroundColor: const Color(0xFF2ECC71),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(l.saveErrorRetry),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
 
   void _showChangePasswordDialog() async {
     final success = await showDialog<bool>(
@@ -44,6 +121,30 @@ class _MyProfileScreenState
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
     final user = ref.watch(authStateProvider).value;
+    final isMobile = MediaQuery.of(context).size.width < 768;
+
+    if (_isLoading) {
+      return Scaffold(
+        backgroundColor: c.background,
+        appBar: AppBar(
+          backgroundColor: c.surface,
+          leading: IconButton(
+            icon: Icon(Icons.arrow_back, color: c.textPrimary),
+            onPressed: () => Navigator.pop(context),
+          ),
+          title: Text(
+            l.menuProfile,
+            style: TextStyle(
+              color: c.textPrimary,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        body: const Center(
+          child: CircularProgressIndicator(color: AppColors.primary),
+        ),
+      );
+    }
 
     return Scaffold(
       backgroundColor: c.background,
@@ -63,7 +164,7 @@ class _MyProfileScreenState
         ),
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(32),
+        padding: EdgeInsets.all(isMobile ? 20 : 32),
         child: Center(
           child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 600),
@@ -89,7 +190,7 @@ class _MyProfileScreenState
                         ),
                       ),
                     ),
-                    const SizedBox(height: 16),
+                    SizedBox(height: isMobile ? 10 : 16),
                     Text(
                       user?.email ?? l.profileFallback,
                       style: TextStyle(
@@ -98,9 +199,9 @@ class _MyProfileScreenState
                         color: c.textPrimary,
                       ),
                     ),
-                    const SizedBox(height: 4),
+                    SizedBox(height: isMobile ? 2 : 4),
                     Text(
-                      l.memberSince(DateTime.now().year),
+                      l.memberSince(_joinYear ?? DateTime.now().year),
                       style: TextStyle(
                         fontSize: 13,
                         color: c.textSecondary,
@@ -110,7 +211,7 @@ class _MyProfileScreenState
                 ),
               ),
 
-              const SizedBox(height: 40),
+              SizedBox(height: isMobile ? 16 : 40),
 
               // Personal Info Section
               Text(
@@ -125,7 +226,7 @@ class _MyProfileScreenState
               const SizedBox(height: 4),
               Divider(color: c.border),
 
-              const SizedBox(height: 20),
+              SizedBox(height: isMobile ? 12 : 20),
 
               Row(
                 children: [
@@ -147,7 +248,7 @@ class _MyProfileScreenState
                 ],
               ),
 
-              const SizedBox(height: 20),
+              SizedBox(height: isMobile ? 14 : 20),
 
               CustomTextField(
                 label: l.jobTitleLabel,
@@ -155,7 +256,7 @@ class _MyProfileScreenState
                 controller: _jobTitleController,
               ),
 
-              const SizedBox(height: 20),
+              SizedBox(height: isMobile ? 14 : 20),
 
               CustomTextField(
                 label: l.phoneLabel,
@@ -164,10 +265,10 @@ class _MyProfileScreenState
                 keyboardType: TextInputType.phone,
               ),
 
-              const SizedBox(height: 32),
+              SizedBox(height: isMobile ? 18 : 32),
 
               ElevatedButton(
-                onPressed: _isSaving ? null : () {},
+                onPressed: _isSaving ? null : _saveProfile,
                 style: ElevatedButton.styleFrom(
                   minimumSize: const Size(160, 48),
                 ),
@@ -183,7 +284,7 @@ class _MyProfileScreenState
                     : Text(l.saveButtonGeneric),
               ),
 
-              const SizedBox(height: 40),
+              SizedBox(height: isMobile ? 16 : 40),
 
               // Account section
               Text(
@@ -198,7 +299,7 @@ class _MyProfileScreenState
               const SizedBox(height: 4),
               Divider(color: c.border),
 
-              const SizedBox(height: 16),
+              SizedBox(height: isMobile ? 10 : 16),
 
               Container(
                 padding: const EdgeInsets.all(16),
@@ -231,7 +332,7 @@ class _MyProfileScreenState
                 ),
               ),
 
-              const SizedBox(height: 12),
+              SizedBox(height: isMobile ? 8 : 12),
 
               Container(
                 padding: const EdgeInsets.all(16),
@@ -274,7 +375,7 @@ class _MyProfileScreenState
                 ),
               ),
 
-              const SizedBox(height: 32),
+              SizedBox(height: isMobile ? 16 : 32),
             ],
           ),
         ),

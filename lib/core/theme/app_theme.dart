@@ -6,6 +6,12 @@ class AppColors {
   // Brand
   static const Color primary        = Color(0xFFFF6B00);
   static const Color primaryDark    = Color(0xFFCC5500);
+  // WCAG-accessible orange for SMALL text/icons on light backgrounds. The
+  // brand #FF6B00 is only ~3.4:1 on white (fails AA 4.5:1 for normal text);
+  // #C2410C is ~5.2:1. Use `primary` for large text (≥18.66px bold) and for
+  // fills with white text on top; use this for small orange text/links/icons
+  // sitting directly on a light surface.
+  static const Color primaryAccessible = Color(0xFFC2410C);
   static const Color accent         = Color(0xFFFFC107);
   // Status
   static const Color live           = Color(0xFF2ECC71);
@@ -130,7 +136,9 @@ class AppTheme {
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
-          foregroundColor: AppColors.primary,
+          // Small orange label on a light surface fails AA at #FF6B00 → use the
+          // accessible orange in light mode (border can stay brand at 3:1).
+          foregroundColor: isDark ? AppColors.primary : AppColors.primaryAccessible,
           minimumSize: const Size(double.infinity, 52),
           side: const BorderSide(color: AppColors.primary, width: 2),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -139,7 +147,7 @@ class AppTheme {
       ),
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
-          foregroundColor: AppColors.primary,
+          foregroundColor: isDark ? AppColors.primary : AppColors.primaryAccessible,
           textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
         ),
       ),

@@ -6,12 +6,15 @@ import '../../../core/services/capacity_provider.dart';
 import '../../../core/services/auth_provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../opportunities/screens/capacity_detail_screen.dart';
+import '../../../core/services/analytics_service.dart';
 
 class FavoritesScreen extends ConsumerWidget {
-  const FavoritesScreen({super.key});
+  final bool embedded;
+  const FavoritesScreen({super.key, this.embedded = false});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    WidgetsBinding.instance.addPostFrameCallback((_) => AnalyticsService.logScreenView('Favorites'));
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
     final favoritesAsync = ref.watch(userFavoriteCapacitiesProvider);
@@ -21,10 +24,13 @@ class FavoritesScreen extends ConsumerWidget {
       appBar: AppBar(
         backgroundColor: c.surface,
         elevation: 0,
-        leading: IconButton(
-          icon: Icon(Icons.arrow_back, color: c.textPrimary),
-          onPressed: () => Navigator.pop(context),
-        ),
+        automaticallyImplyLeading: false,
+        leading: embedded
+            ? null
+            : IconButton(
+                icon: Icon(Icons.arrow_back, color: c.textPrimary),
+                onPressed: () => Navigator.pop(context),
+              ),
         title: Text(
           l.navFavorites,
           style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.w900, fontSize: 18),
@@ -151,10 +157,7 @@ class _FavoriteCard extends ConsumerWidget {
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
     return GestureDetector(
-      onTap: () => Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => CapacityDetailScreen(capacity: capacity)),
-      ),
+      onTap: () => showCapacityDetailDialog(context, capacity),
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(

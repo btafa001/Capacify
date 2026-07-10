@@ -6,23 +6,8 @@ import '../../../core/services/capacity_provider.dart';
 import '../../../shared/widgets/custom_text_field.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/utils/content_moderation.dart';
-
-const List<String> kTradesList = [
-  'Generalunternehmer',
-  'Rohbau',
-  'Trockenbau',
-  'Elektro',
-  'Sanitär & Heizung',
-  'Dach',
-  'Fassade',
-  'Tiefbau',
-  'Architektur',
-  'Statik',
-  'Stahl',
-  'Beton',
-  'HVAC',
-  'Lieferant',
-];
+import '../../../core/services/analytics_service.dart';
+import '../../../core/constants/app_constants.dart';
 
 class EditCapacityScreen extends ConsumerStatefulWidget {
   final CapacityModel capacity;
@@ -55,6 +40,7 @@ class _EditCapacityScreenState
   @override
   void initState() {
     super.initState();
+    AnalyticsService.logScreenView('EditCapacity');
     _titleController = TextEditingController(text: widget.capacity.title);
     _descriptionController =
         TextEditingController(text: widget.capacity.description);
@@ -64,7 +50,9 @@ class _EditCapacityScreenState
       text: widget.capacity.workerCount.toString(),
     );
     _type = widget.capacity.type;
-    _selectedTrade = widget.capacity.trade;
+    _selectedTrade = kTrades.contains(widget.capacity.trade)
+        ? widget.capacity.trade
+        : kTrades.last;
     _availableFrom = widget.capacity.availableFrom;
     _availableTo = widget.capacity.availableTo;
     _status = widget.capacity.status;
@@ -80,23 +68,11 @@ class _EditCapacityScreenState
   }
 
   Future<void> _pickDate({required bool isFrom}) async {
-    final c = AppColors.of(context);
     final picked = await showDatePicker(
       context: context,
       initialDate: isFrom ? _availableFrom : _availableTo,
       firstDate: DateTime.now(),
       lastDate: DateTime.now().add(const Duration(days: 365)),
-      builder: (context, child) {
-        return Theme(
-          data: ThemeData.dark().copyWith(
-            colorScheme: ColorScheme.dark(
-              primary: AppColors.primary,
-              surface: c.surface,
-            ),
-          ),
-          child: child!,
-        );
-      },
     );
     if (picked != null) {
       setState(() {
@@ -119,11 +95,6 @@ class _EditCapacityScreenState
 
       final updatedCapacity = CapacityModel(
         id: widget.capacity.id,
-        companyId: widget.capacity.companyId,
-        companyName: widget.capacity.companyName,
-        companyCity: widget.capacity.companyCity,
-        companyPhone: widget.capacity.companyPhone,
-        companyEmail: widget.capacity.companyEmail,
         type: _type,
         status: _status,
         availabilityType: widget.capacity.availabilityType,
@@ -135,7 +106,12 @@ class _EditCapacityScreenState
             int.tryParse(_workerCountController.text) ?? 1,
         availableFrom: _availableFrom,
         availableTo: _availableTo,
-        contentFlagged: containsBlockedContent(_descriptionController.text),
+        // Once flagged, stays flagged through owner edits until an admin
+        // clears it — matches the Firestore rule, which only allows
+        // contentFlagged to move false→true (never true→false) on a
+        // non-admin write, so a self-edit can never silently unflag.
+        contentFlagged: widget.capacity.contentFlagged ||
+            shouldFlagDescription(_descriptionController.text),
       );
 
       await service.updateCapacity(updatedCapacity);
@@ -291,7 +267,7 @@ class _EditCapacityScreenState
                       style: TextStyle(
                           color: c.textPrimary),
                       decoration: const InputDecoration(),
-                      items: kTradesList
+                      items: kTrades
                           .map((t) => DropdownMenuItem(
                                 value: t,
                                 child: Text(l.tradeName(t)),

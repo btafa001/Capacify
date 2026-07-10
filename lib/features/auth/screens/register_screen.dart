@@ -1,12 +1,19 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/services/auth_provider.dart';
+import '../../../core/utils/validators.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../shared/widgets/custom_text_field.dart';
-import '../../../core/constants/app_constants.dart';
+import '../../../shared/widgets/capacify_logo.dart';
 import '../../legal/screens/agb_screen.dart';
 import '../../legal/screens/datenschutz_screen.dart';
+import '../../../core/services/analytics_service.dart';
+import '../../landing/screens/landing_screen.dart';
+import '../../dashboard/screens/dashboard_screen.dart';
+import 'login_screen.dart';
 
 class RegisterScreen extends ConsumerStatefulWidget {
   const RegisterScreen({super.key});
@@ -23,13 +30,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   final _emailController        = TextEditingController();
   final _passwordController     = TextEditingController();
   final _companyNameController  = TextEditingController();
-  final _companyEmailController = TextEditingController();
-  final _phoneController        = TextEditingController();
-  final _cityController         = TextEditingController();
-  final _websiteController      = TextEditingController();
-  final _vatNumberController    = TextEditingController();
 
-  String _selectedTrade = kTrades[0];
   bool _isLoading = false;
   bool _obscurePassword = true;
   bool _consentChecked = false;
@@ -39,6 +40,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   @override
   void initState() {
     super.initState();
+    AnalyticsService.logScreenView('Register');
     _passwordController.addListener(() {
       if (mounted) _checkPasswordStrength(_passwordController.text);
     });
@@ -51,11 +53,6 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     _emailController.dispose();
     _passwordController.dispose();
     _companyNameController.dispose();
-    _companyEmailController.dispose();
-    _phoneController.dispose();
-    _cityController.dispose();
-    _websiteController.dispose();
-    _vatNumberController.dispose();
     super.dispose();
   }
 
@@ -85,6 +82,16 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     }
   }
 
+  void _toLanding() => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const LandingScreen()),
+      );
+
+  void _toLogin() => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+      );
+
   Future<void> _register(AppLocalizations l) async {
     if (!_formKey.currentState!.validate()) return;
     if (!_consentChecked) {
@@ -103,15 +110,78 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
         firstName: _firstNameController.text.trim(),
         lastName: _lastNameController.text.trim(),
         companyName: _companyNameController.text.trim(),
-        trade: _selectedTrade,
-        city: _cityController.text.trim(),
-        phone: _phoneController.text.trim(),
-        website: _websiteController.text.trim(),
-        companyEmail: _companyEmailController.text.trim(),
-        vatNumber: _vatNumberController.text.trim(),
       );
+      AnalyticsService.logEvent('sign_up', parameters: {'method': 'email'});
+      // Navigate to the dashboard directly rather than popping back to "the
+      // first route" and relying on main.dart's authStateProvider-driven
+      // home gate to have already swapped to it — that gate only rebuilds
+      // when the auth stream emits, which can land slightly after (rather
+      // than before) this code runs, especially for the popup-based Google
+      // flow. Racing it caused intermittent landings back on the page this
+      // screen was pushed from instead of the dashboard.
+      if (mounted) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+          (route) => false,
+        );
+      }
     } catch (e) {
       setState(() => _errorMessage = e.toString());
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _signUpWithGoogle() async {
+    setState(() { _isLoading = true; _errorMessage = null; });
+    try {
+      final credential = await ref.read(authServiceProvider).signInWithGoogle();
+      if (credential == null) return; // user closed popup
+      AnalyticsService.logEvent('sign_up', parameters: {'method': 'google'});
+      // Navigate to the dashboard directly rather than popping back to "the
+      // first route" and relying on main.dart's authStateProvider-driven
+      // home gate to have already swapped to it — that gate only rebuilds
+      // when the auth stream emits, which can land slightly after (rather
+      // than before) this code runs, especially for the popup-based Google
+      // flow. Racing it caused intermittent landings back on the page this
+      // screen was pushed from instead of the dashboard.
+      if (mounted) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+          (route) => false,
+        );
+      }
+    } catch (e) {
+      if (mounted) setState(() => _errorMessage = e.toString());
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _signUpWithApple() async {
+    setState(() { _isLoading = true; _errorMessage = null; });
+    try {
+      final credential = await ref.read(authServiceProvider).signInWithApple();
+      if (credential == null) return; // user closed popup
+      AnalyticsService.logEvent('sign_up', parameters: {'method': 'apple'});
+      // Navigate to the dashboard directly rather than popping back to "the
+      // first route" and relying on main.dart's authStateProvider-driven
+      // home gate to have already swapped to it — that gate only rebuilds
+      // when the auth stream emits, which can land slightly after (rather
+      // than before) this code runs, especially for the popup-based Google
+      // flow. Racing it caused intermittent landings back on the page this
+      // screen was pushed from instead of the dashboard.
+      if (mounted) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+          (route) => false,
+        );
+      }
+    } catch (e) {
+      if (mounted) setState(() => _errorMessage = e.toString());
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -121,336 +191,299 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
-    return Scaffold(
-      backgroundColor: c.background,
-      appBar: AppBar(
-        backgroundColor: c.surface,
-        elevation: 0,
-        leading: IconButton(
-          icon: Icon(Icons.arrow_back, color: c.textPrimary),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: Row(
-          children: [
-            Container(
-              width: 28, height: 28,
-              decoration: BoxDecoration(color: AppColors.primary, borderRadius: BorderRadius.circular(6)),
-              child: const Center(child: Text('C', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w900))),
-            ),
-            const SizedBox(width: 10),
-            Text('Capacify', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: c.textPrimary)),
-          ],
-        ),
-      ),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(32),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 600),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // ── HEADER ──
-                  Text(l.registerTitle, style: TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: c.textPrimary, letterSpacing: -0.5)),
-                  const SizedBox(height: 6),
-                  Text(l.registerSubtitle, style: TextStyle(fontSize: 15, color: c.textSecondary)),
-                  const SizedBox(height: 36),
+    final isWide = MediaQuery.of(context).size.width > 900;
 
-                  // ── ERROR ──
-                  if (_errorMessage != null) ...[
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: AppColors.error.withOpacity(0.1),
+    return KeyboardListener(
+      focusNode: FocusNode(),
+      onKeyEvent: (event) {
+        if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.enter) {
+          _register(l);
+        }
+      },
+      child: Scaffold(
+        backgroundColor: c.background,
+        appBar: AppBar(
+          backgroundColor: c.surface,
+          elevation: 0,
+          leading: IconButton(
+            icon: Icon(Icons.arrow_back, color: c.textPrimary),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ),
+        body: Row(
+          children: [
+            if (isWide)
+              Expanded(
+                flex: 3,
+                child: Container(
+                  color: c.surfaceVariant,
+                  padding: const EdgeInsets.all(56),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      InkWell(
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: AppColors.error.withOpacity(0.3)),
+                        onTap: _toLanding,
+                        child: CapacifyWordmark(symbolSize: 66, fontSize: 38, textColor: c.textPrimary),
                       ),
-                      child: Row(
+                      const SizedBox(height: 64),
+                      Text(l.loginSloganLine1, style: TextStyle(fontSize: 42, fontWeight: FontWeight.w900, color: c.textPrimary, height: 1.1, letterSpacing: -1)),
+                      Text(l.loginSloganLine2, style: const TextStyle(fontSize: 42, fontWeight: FontWeight.w900, color: AppColors.primary, height: 1.1, letterSpacing: -1)),
+                      const SizedBox(height: 40),
+                      Text(l.loginSloganSub, style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: c.textSecondary, height: 1.3)),
+                      const SizedBox(height: 40),
+                      Container(
+                        padding: const EdgeInsets.only(left: 20),
+                        decoration: const BoxDecoration(border: Border(left: BorderSide(color: AppColors.primary, width: 4))),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(l.loginQuote1, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: c.textSecondary, height: 1.4)),
+                            Text(l.loginQuote2, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: c.textSecondary, height: 1.4)),
+                          ],
+                        ),
+                      ),
+                      const Spacer(),
+                      Row(
                         children: [
-                          const Icon(Icons.error_outline, color: AppColors.error, size: 18),
-                          const SizedBox(width: 10),
-                          Expanded(child: Text(_errorMessage!, style: const TextStyle(color: AppColors.error, fontSize: 14))),
+                          Container(width: 10, height: 10, decoration: const BoxDecoration(color: AppColors.live, shape: BoxShape.circle)),
+                          const SizedBox(width: 8),
+                          Text(l.loginLiveBadge, style: const TextStyle(fontSize: 13, color: AppColors.live, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            Expanded(
+              flex: 2,
+              child: LayoutBuilder(
+                builder: (context, constraints) => SingleChildScrollView(
+                  padding: EdgeInsets.all(isWide ? 40 : 24),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                    child: Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 420),
+                        child: Form(
+                      key: _formKey,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (!isWide)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 16),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(8),
+                                onTap: _toLanding,
+                                child: CapacifyWordmark(symbolSize: 70, fontSize: 40, textColor: c.textPrimary),
+                              ),
+                            ),
+                          Text(l.registerTitle, style: TextStyle(fontSize: 34, fontWeight: FontWeight.w900, color: c.textPrimary, letterSpacing: -0.5)),
+                          const SizedBox(height: 6),
+                          Text(l.registerSubtitle, style: TextStyle(fontSize: 16, color: c.textSecondary)),
+                          const SizedBox(height: 4),
+                          Text(l.registerQuickNote, style: TextStyle(fontSize: 13, color: c.textTertiary)),
+                          SizedBox(height: isWide ? 32 : 18),
+
+                          if (_errorMessage != null) ...[
+                            Container(
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: AppColors.error.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: AppColors.error.withOpacity(0.3)),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.error_outline, color: AppColors.error, size: 18),
+                                  const SizedBox(width: 10),
+                                  Expanded(child: Text(_errorMessage!, style: const TextStyle(color: AppColors.error, fontSize: 14))),
+                                ],
+                              ),
+                            ),
+                            SizedBox(height: isWide ? 20 : 14),
+                          ],
+
+                          Row(
+                            children: [
+                              Expanded(child: CustomTextField(
+                                label: l.firstNameLabel, hint: l.firstNameHint,
+                                controller: _firstNameController,
+                                validator: (v) => v == null || v.isEmpty ? l.required : null,
+                              )),
+                              const SizedBox(width: 16),
+                              Expanded(child: CustomTextField(
+                                label: l.lastNameLabel, hint: l.lastNameHint,
+                                controller: _lastNameController,
+                                validator: (v) => v == null || v.isEmpty ? l.required : null,
+                              )),
+                            ],
+                          ),
+                          SizedBox(height: isWide ? 20 : 14),
+
+                          CustomTextField(
+                            label: l.emailLabel, hint: l.emailHint,
+                            controller: _emailController,
+                            keyboardType: TextInputType.emailAddress,
+                            validator: (v) => Validators.email(v, l),
+                          ),
+                          SizedBox(height: isWide ? 20 : 14),
+
+                          CustomTextField(
+                            label: l.passwordLabel, hint: l.passwordHint,
+                            controller: _passwordController,
+                            obscureText: _obscurePassword,
+                            suffixIcon: IconButton(
+                              icon: Icon(_obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined, color: c.textSecondary),
+                              onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                            ),
+                            validator: (v) {
+                              if (v == null || v.isEmpty) return l.enterPassword;
+                              if (v.length < 8) return l.min8Chars;
+                              return null;
+                            },
+                          ),
+
+                          if (_passwordController.text.isNotEmpty) ...[
+                            SizedBox(height: isWide ? 10 : 8),
+                            Row(
+                              children: [
+                                Expanded(child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: LinearProgressIndicator(value: _passwordStrength / 3, backgroundColor: c.border, color: _strengthColor, minHeight: 6),
+                                )),
+                                const SizedBox(width: 10),
+                                Text(_strengthLabel(l), style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: _strengthColor)),
+                              ],
+                            ),
+                            SizedBox(height: isWide ? 8 : 6),
+                            _PasswordReq(met: _passwordController.text.length >= 8, label: l.req8Chars),
+                            _PasswordReq(met: _passwordController.text.contains(RegExp(r'[A-Z]')), label: l.req1Upper),
+                            _PasswordReq(met: _passwordController.text.contains(RegExp(r'[0-9]')), label: l.req1Number),
+                          ],
+
+                          SizedBox(height: isWide ? 20 : 14),
+
+                          CustomTextField(
+                            label: l.companyNameLabel, hint: l.companyNameHint,
+                            controller: _companyNameController,
+                            validator: (v) => v == null || v.isEmpty ? l.required : null,
+                          ),
+                          SizedBox(height: isWide ? 20 : 16),
+
+                          // ── Consent ──
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              SizedBox(
+                                width: 24, height: 24,
+                                child: Checkbox(
+                                  value: _consentChecked,
+                                  onChanged: (v) => setState(() => _consentChecked = v ?? false),
+                                  activeColor: AppColors.primary,
+                                  checkColor: Colors.white,
+                                  side: BorderSide(color: c.textSecondary, width: 1.5),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Padding(
+                                  padding: const EdgeInsets.only(top: 2),
+                                  child: Wrap(
+                                    children: [
+                                      Text(l.consentPrefix, style: TextStyle(fontSize: 13, color: c.textSecondary, height: 1.5)),
+                                      GestureDetector(
+                                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AGBScreen())),
+                                        child: const Text('AGB', style: TextStyle(fontSize: 13, color: AppColors.primary, fontWeight: FontWeight.w700, height: 1.5, decoration: TextDecoration.underline, decorationColor: AppColors.primary)),
+                                      ),
+                                      Text(l.consentMiddle, style: TextStyle(fontSize: 13, color: c.textSecondary, height: 1.5)),
+                                      GestureDetector(
+                                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DatenschutzScreen())),
+                                        child: const Text('Datenschutzerklärung', style: TextStyle(fontSize: 13, color: AppColors.primary, fontWeight: FontWeight.w700, height: 1.5, decoration: TextDecoration.underline, decorationColor: AppColors.primary)),
+                                      ),
+                                      Text(l.consentSuffix, style: TextStyle(fontSize: 13, color: c.textSecondary, height: 1.5)),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          SizedBox(height: isWide ? 16 : 8),
+
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton(
+                              onPressed: _isLoading ? null : () => _register(l),
+                              style: ElevatedButton.styleFrom(
+                                minimumSize: const Size(double.infinity, 56),
+                                elevation: 6,
+                                shadowColor: AppColors.primary.withOpacity(0.4),
+                              ),
+                              child: _isLoading
+                                  ? const SizedBox(height: 22, width: 22, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
+                                  : Text(l.registerButton, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 1)),
+                            ),
+                          ),
+                          SizedBox(height: isWide ? 24 : 14),
+
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(l.alreadyRegistered, style: TextStyle(color: c.textSecondary, fontSize: 15)),
+                              TextButton(onPressed: _toLogin, child: Text(l.toLogin)),
+                            ],
+                          ),
+
+                          SizedBox(height: isWide ? 28 : 12),
+
+                          // ── Social divider ──
+                          Row(
+                            children: [
+                              Expanded(child: Divider(color: c.border)),
+                              Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 16),
+                                child: Text(l.orDivider, style: TextStyle(fontSize: 13, color: c.textTertiary)),
+                              ),
+                              Expanded(child: Divider(color: c.border)),
+                            ],
+                          ),
+                          SizedBox(height: isWide ? 20 : 12),
+
+                          _SocialButton(
+                            icon: const FaIcon(FontAwesomeIcons.google, size: 17, color: Color(0xFF4285F4)),
+                            label: l.continueWithGoogle,
+                            onTap: _isLoading ? null : _signUpWithGoogle,
+                          ),
+                          SizedBox(height: isWide ? 12 : 8),
+
+                          _SocialButton(
+                            icon: FaIcon(FontAwesomeIcons.apple, size: 18, color: c.textPrimary),
+                            label: l.continueWithApple,
+                            onTap: _isLoading ? null : _signUpWithApple,
+                          ),
+                          SizedBox(height: isWide ? 24 : 14),
+
+                          // ── Disclaimer ──
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(color: c.surfaceVariant, borderRadius: BorderRadius.circular(6), border: Border.all(color: c.border)),
+                            child: Text(l.registerDisclaimer, style: TextStyle(fontSize: 11, color: c.textTertiary, height: 1.5, fontStyle: FontStyle.italic), textAlign: TextAlign.center),
+                          ),
+                          if (isWide) const SizedBox(height: 8),
                         ],
                       ),
                     ),
-                    const SizedBox(height: 20),
-                  ],
-
-                  // ── SECTION 1: PERSONAL ──
-                  _RegisterSectionHeader(label: l.sectionPersonal, icon: Icons.person_outline),
-                  const SizedBox(height: 16),
-
-                  Row(
-                    children: [
-                      Expanded(child: CustomTextField(
-                        label: l.firstNameLabel, hint: l.firstNameHint,
-                        controller: _firstNameController,
-                        validator: (v) => v == null || v.isEmpty ? l.required : null,
-                      )),
-                      const SizedBox(width: 16),
-                      Expanded(child: CustomTextField(
-                        label: l.lastNameLabel, hint: l.lastNameHint,
-                        controller: _lastNameController,
-                        validator: (v) => v == null || v.isEmpty ? l.required : null,
-                      )),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-
-                  CustomTextField(
-                    label: '${l.emailLabel} *', hint: l.emailHint,
-                    controller: _emailController,
-                    keyboardType: TextInputType.emailAddress,
-                    validator: (v) {
-                      if (v == null || v.isEmpty) return l.enterEmail;
-                      if (!v.contains('@') || !v.contains('.')) return l.invalidEmailAddr;
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 20),
-
-                  CustomTextField(
-                    label: '${l.passwordLabel} *', hint: l.passwordHint,
-                    controller: _passwordController,
-                    obscureText: _obscurePassword,
-                    suffixIcon: IconButton(
-                      icon: Icon(_obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined, color: c.textSecondary),
-                      onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                    ),
-                    validator: (v) {
-                      if (v == null || v.isEmpty) return l.enterPassword;
-                      if (v.length < 8) return l.min8Chars;
-                      return null;
-                    },
-                  ),
-
-                  if (_passwordController.text.isNotEmpty) ...[
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(child: ClipRRect(
-                          borderRadius: BorderRadius.circular(4),
-                          child: LinearProgressIndicator(value: _passwordStrength / 3, backgroundColor: c.border, color: _strengthColor, minHeight: 6),
-                        )),
-                        const SizedBox(width: 10),
-                        Text(_strengthLabel(l), style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: _strengthColor)),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    _PasswordReq(met: _passwordController.text.length >= 8, label: l.req8Chars),
-                    _PasswordReq(met: _passwordController.text.contains(RegExp(r'[A-Z]')), label: l.req1Upper),
-                    _PasswordReq(met: _passwordController.text.contains(RegExp(r'[0-9]')), label: l.req1Number),
-                  ],
-
-                  const SizedBox(height: 32),
-
-                  // ── SECTION 2: COMPANY ──
-                  _RegisterSectionHeader(label: l.sectionCompany, icon: Icons.domain_outlined),
-                  const SizedBox(height: 16),
-
-                  CustomTextField(
-                    label: l.companyNameLabel, hint: l.companyNameHint,
-                    controller: _companyNameController,
-                    validator: (v) => v == null || v.isEmpty ? l.required : null,
-                  ),
-                  const SizedBox(height: 20),
-
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(l.tradeLabel, style: TextStyle(color: c.textSecondary, fontSize: 15, fontWeight: FontWeight.w500)),
-                      const SizedBox(height: 6),
-                      DropdownButtonFormField<String>(
-                        value: _selectedTrade,
-                        dropdownColor: c.surface,
-                        style: TextStyle(color: c.textPrimary, fontSize: 15),
-                        decoration: const InputDecoration(),
-                        items: kTrades.map((t) => DropdownMenuItem(value: t, child: Text(l.tradeName(t)))).toList(),
-                        onChanged: (v) => setState(() => _selectedTrade = v!),
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-
-                  Row(
-                    children: [
-                      Expanded(child: CustomTextField(
-                        label: l.cityLabel, hint: l.cityHint,
-                        controller: _cityController,
-                        validator: (v) => v == null || v.isEmpty ? l.required : null,
-                      )),
-                      const SizedBox(width: 16),
-                      Expanded(child: CustomTextField(
-                        label: l.phoneLabel, hint: l.phoneHint,
-                        controller: _phoneController,
-                        keyboardType: TextInputType.phone,
-                      )),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-
-                  CustomTextField(
-                    label: l.companyEmailLabel, hint: l.companyEmailHint,
-                    controller: _companyEmailController,
-                    keyboardType: TextInputType.emailAddress,
-                    validator: (v) {
-                      if (v == null || v.isEmpty) return l.required;
-                      if (!v.contains('@') || !v.contains('.')) return l.invalidEmailAddr;
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 20),
-
-                  CustomTextField(
-                    label: l.websiteLabel, hint: 'https://www.company.com',
-                    controller: _websiteController,
-                    keyboardType: TextInputType.url,
-                  ),
-                  const SizedBox(height: 32),
-
-                  // ── SECTION 3: VERIFICATION ──
-                  _RegisterSectionHeader(label: l.sectionVerify, icon: Icons.verified_outlined),
-                  const SizedBox(height: 16),
-
-                  CustomTextField(
-                    label: l.vatLabel, hint: l.vatHint,
-                    controller: _vatNumberController,
-                    validator: (v) {
-                      if (v == null || v.isEmpty) return null;
-                      if (!RegExp(r'^DE[0-9]{9}$').hasMatch(v)) return l.vatError;
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 12),
-
-                  Container(
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: AppColors.live.withOpacity(0.06),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: AppColors.live.withOpacity(0.25)),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(children: [
-                          const Icon(Icons.verified, size: 15, color: AppColors.live),
-                          const SizedBox(width: 8),
-                          Text(l.verifyHowTitle, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.live)),
-                        ]),
-                        const SizedBox(height: 10),
-                        Text(l.verifySteps, style: TextStyle(fontSize: 12, color: c.textSecondary, height: 1.6)),
-                      ],
                     ),
                   ),
-                  const SizedBox(height: 32),
-
-                  // ── CONSENT ──
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        width: 24, height: 24,
-                        child: Checkbox(
-                          value: _consentChecked,
-                          onChanged: (v) => setState(() => _consentChecked = v ?? false),
-                          activeColor: AppColors.primary,
-                          checkColor: Colors.white,
-                          side: BorderSide(color: c.textSecondary, width: 1.5),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.only(top: 2),
-                          child: Wrap(
-                            children: [
-                              Text(l.consentPrefix, style: TextStyle(fontSize: 13, color: c.textSecondary, height: 1.5)),
-                              GestureDetector(
-                                onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AGBScreen())),
-                                child: const Text('AGB', style: TextStyle(fontSize: 13, color: AppColors.primary, fontWeight: FontWeight.w700, height: 1.5, decoration: TextDecoration.underline, decorationColor: AppColors.primary)),
-                              ),
-                              Text(l.consentMiddle, style: TextStyle(fontSize: 13, color: c.textSecondary, height: 1.5)),
-                              GestureDetector(
-                                onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DatenschutzScreen())),
-                                child: const Text('Datenschutzerklärung', style: TextStyle(fontSize: 13, color: AppColors.primary, fontWeight: FontWeight.w700, height: 1.5, decoration: TextDecoration.underline, decorationColor: AppColors.primary)),
-                              ),
-                              Text(l.consentSuffix, style: TextStyle(fontSize: 13, color: c.textSecondary, height: 1.5)),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-
-                  // ── REGISTER BUTTON ──
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: (_isLoading || !_consentChecked) ? null : () => _register(l),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.primary,
-                        disabledBackgroundColor: AppColors.primary.withOpacity(0.3),
-                        minimumSize: const Size(double.infinity, 56),
-                        elevation: 6,
-                        shadowColor: AppColors.primary.withOpacity(0.4),
-                      ),
-                      child: _isLoading
-                          ? const SizedBox(height: 22, width: 22, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
-                          : Text(l.registerButton, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 0.8)),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-
-                  // ── DISCLAIMER ──
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(color: c.surfaceVariant, borderRadius: BorderRadius.circular(6), border: Border.all(color: c.border)),
-                    child: Text(l.registerDisclaimer, style: TextStyle(fontSize: 11, color: c.textTertiary, height: 1.5, fontStyle: FontStyle.italic), textAlign: TextAlign.center),
-                  ),
-                  const SizedBox(height: 20),
-
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(l.alreadyRegistered, style: TextStyle(color: c.textSecondary, fontSize: 15)),
-                      TextButton(onPressed: () => Navigator.pop(context), child: Text(l.toLogin)),
-                    ],
-                  ),
-                  const SizedBox(height: 32),
-                ],
+                ),
               ),
             ),
-          ),
+          ],
         ),
       ),
-    );
-  }
-}
-
-class _RegisterSectionHeader extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  const _RegisterSectionHeader({required this.label, required this.icon});
-
-  @override
-  Widget build(BuildContext context) {
-    final c = AppColors.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(children: [
-          Icon(icon, size: 16, color: AppColors.primary),
-          const SizedBox(width: 8),
-          Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primary, letterSpacing: 1)),
-        ]),
-        const SizedBox(height: 8),
-        Divider(color: c.border),
-      ],
     );
   }
 }
@@ -471,6 +504,72 @@ class _PasswordReq extends StatelessWidget {
           const SizedBox(width: 6),
           Text(label, style: TextStyle(fontSize: 12, color: met ? AppColors.live : c.textTertiary)),
         ],
+      ),
+    );
+  }
+}
+
+// ─── Social Button ────────────────────────────────────────────────────────────
+// Mirrors login_screen.dart's _SocialButton exactly, so both auth screens
+// share identical hover/disabled treatment for the Google/Apple buttons.
+
+class _SocialButton extends StatefulWidget {
+  final Widget icon;
+  final String label;
+  final VoidCallback? onTap;
+  const _SocialButton({required this.icon, required this.label, this.onTap});
+  @override
+  State<_SocialButton> createState() => _SocialButtonState();
+}
+
+class _SocialButtonState extends State<_SocialButton> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final disabled = widget.onTap == null;
+    return MouseRegion(
+      cursor: disabled ? SystemMouseCursors.basic : SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit:  (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 13),
+          decoration: BoxDecoration(
+            color: _hover && !disabled
+                ? c.border.withOpacity(0.35)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: disabled
+                  ? c.border.withOpacity(0.4)
+                  : _hover
+                      ? c.textSecondary.withOpacity(0.5)
+                      : c.border,
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              widget.icon,
+              const SizedBox(width: 12),
+              Text(
+                widget.label,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: disabled
+                      ? c.textTertiary
+                      : c.textPrimary,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

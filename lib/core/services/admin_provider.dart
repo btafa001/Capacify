@@ -37,3 +37,20 @@ final flaggedCapacitiesProvider = StreamProvider<List<CapacityModel>>((ref) {
 final flaggedCompaniesProvider = StreamProvider<List<CompanyModel>>((ref) {
   return ref.read(adminServiceProvider).getFlaggedCompanies();
 });
+
+/// postId → posterCompanyId for every post (admin-only read of the locked
+/// owner sidecars). Powers the per-company posting metrics on the admin
+/// Dashboard (posts-per-company, "no listing", onboarding funnel, reactivation).
+final capacityOwnerMapProvider = StreamProvider<Map<String, String>>((ref) {
+  return FirebaseFirestore.instance
+      .collection('capacityOwners')
+      .snapshots()
+      .map((s) {
+    final map = <String, String>{};
+    for (final d in s.docs) {
+      final pid = d.data()['posterCompanyId'] as String?;
+      if (pid != null && pid.isNotEmpty) map[d.id] = pid;
+    }
+    return map;
+  });
+});

@@ -3,13 +3,16 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/utils/validators.dart';
 import '../../../core/services/auth_provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../shared/widgets/custom_text_field.dart';
 import '../../../shared/widgets/capacify_logo.dart';
 import 'register_screen.dart';
 import 'forgot_password_screen.dart';
+import '../../landing/screens/landing_screen.dart';
 import '../../dashboard/screens/dashboard_screen.dart';
+import '../../../core/services/analytics_service.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -25,6 +28,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   bool _isLoading = false;
   bool _obscurePassword = true;
   String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    AnalyticsService.logScreenView('Login');
+  }
 
   @override
   void dispose() {
@@ -44,8 +53,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         email: _emailController.text.trim(),
         password: _passwordController.text,
       );
+      AnalyticsService.logEvent('login', parameters: {'method': 'email'});
+      // Navigate to the dashboard directly rather than popping back to "the
+      // first route" and relying on main.dart's authStateProvider-driven
+      // home gate to have already swapped to it — that gate only rebuilds
+      // when the auth stream emits, which can land slightly after (rather
+      // than before) this code runs, especially for the popup-based Google
+      // flow. Racing it caused intermittent landings back on the page this
+      // screen was pushed from instead of the dashboard.
       if (mounted) {
-        Navigator.of(context).pushAndRemoveUntil(
+        Navigator.pushAndRemoveUntil(
+          context,
           MaterialPageRoute(builder: (_) => const DashboardScreen()),
           (route) => false,
         );
@@ -63,8 +81,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       final credential =
           await ref.read(authServiceProvider).signInWithGoogle();
       if (credential == null) return; // user closed popup
+      AnalyticsService.logEvent('login', parameters: {'method': 'google'});
+      // Navigate to the dashboard directly rather than popping back to "the
+      // first route" and relying on main.dart's authStateProvider-driven
+      // home gate to have already swapped to it — that gate only rebuilds
+      // when the auth stream emits, which can land slightly after (rather
+      // than before) this code runs, especially for the popup-based Google
+      // flow. Racing it caused intermittent landings back on the page this
+      // screen was pushed from instead of the dashboard.
       if (mounted) {
-        Navigator.of(context).pushAndRemoveUntil(
+        Navigator.pushAndRemoveUntil(
+          context,
           MaterialPageRoute(builder: (_) => const DashboardScreen()),
           (route) => false,
         );
@@ -76,14 +103,28 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     }
   }
 
+  void _toLanding() => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const LandingScreen()),
+      );
+
   Future<void> _signInWithApple() async {
     setState(() { _isLoading = true; _errorMessage = null; });
     try {
       final credential =
           await ref.read(authServiceProvider).signInWithApple();
       if (credential == null) return; // user closed popup
+      AnalyticsService.logEvent('login', parameters: {'method': 'apple'});
+      // Navigate to the dashboard directly rather than popping back to "the
+      // first route" and relying on main.dart's authStateProvider-driven
+      // home gate to have already swapped to it — that gate only rebuilds
+      // when the auth stream emits, which can land slightly after (rather
+      // than before) this code runs, especially for the popup-based Google
+      // flow. Racing it caused intermittent landings back on the page this
+      // screen was pushed from instead of the dashboard.
       if (mounted) {
-        Navigator.of(context).pushAndRemoveUntil(
+        Navigator.pushAndRemoveUntil(
+          context,
           MaterialPageRoute(builder: (_) => const DashboardScreen()),
           (route) => false,
         );
@@ -110,6 +151,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       },
       child: Scaffold(
         backgroundColor: c.background,
+        appBar: AppBar(
+          backgroundColor: c.surface,
+          elevation: 0,
+          leading: IconButton(
+            icon: Icon(Icons.arrow_back, color: c.textPrimary),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ),
         body: Row(
           children: [
             if (isWide)
@@ -121,7 +170,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      CapacifyWordmark(symbolSize: 66, fontSize: 38, textColor: c.textPrimary),
+                      InkWell(
+                        borderRadius: BorderRadius.circular(8),
+                        onTap: _toLanding,
+                        child: CapacifyWordmark(symbolSize: 66, fontSize: 38, textColor: c.textPrimary),
+                      ),
                       const SizedBox(height: 64),
                       Text(l.loginSloganLine1, style: TextStyle(fontSize: 42, fontWeight: FontWeight.w900, color: c.textPrimary, height: 1.1, letterSpacing: -1)),
                       Text(l.loginSloganLine2, style: const TextStyle(fontSize: 42, fontWeight: FontWeight.w900, color: AppColors.primary, height: 1.1, letterSpacing: -1)),
@@ -153,27 +206,32 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               ),
             Expanded(
               flex: 2,
-              child: Center(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(40),
+              child: LayoutBuilder(
+                builder: (context, constraints) => SingleChildScrollView(
+                  padding: EdgeInsets.all(isWide ? 40 : 24),
                   child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 420),
-                    child: Form(
+                    constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                    child: Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 420),
+                        child: Form(
                       key: _formKey,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           if (!isWide)
-                            Center(
-                              child: Padding(
-                                padding: const EdgeInsets.only(bottom: 32),
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 16),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(8),
+                                onTap: _toLanding,
                                 child: CapacifyWordmark(symbolSize: 70, fontSize: 40, textColor: c.textPrimary),
                               ),
                             ),
                           Text(l.loginTitle, style: TextStyle(fontSize: 34, fontWeight: FontWeight.w900, color: c.textPrimary, letterSpacing: -0.5)),
                           const SizedBox(height: 6),
                           Text(l.loginWelcome, style: TextStyle(fontSize: 16, color: c.textSecondary)),
-                          const SizedBox(height: 36),
+                          SizedBox(height: isWide ? 36 : 16),
                           if (_errorMessage != null) ...[
                             Container(
                               padding: const EdgeInsets.all(14),
@@ -190,20 +248,16 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                 ],
                               ),
                             ),
-                            const SizedBox(height: 20),
+                            SizedBox(height: isWide ? 20 : 14),
                           ],
                           CustomTextField(
                             label: l.emailLabel,
                             hint: l.emailHint,
                             controller: _emailController,
                             keyboardType: TextInputType.emailAddress,
-                            validator: (v) {
-                              if (v == null || v.isEmpty) return l.required;
-                              if (!v.contains('@')) return l.invalidEmail;
-                              return null;
-                            },
+                            validator: (v) => Validators.email(v, l),
                           ),
-                          const SizedBox(height: 20),
+                          SizedBox(height: isWide ? 20 : 14),
                           CustomTextField(
                             label: l.passwordLabel,
                             hint: '••••••••',
@@ -225,7 +279,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               child: Text(l.forgotPassword),
                             ),
                           ),
-                          const SizedBox(height: 16),
+                          SizedBox(height: isWide ? 16 : 8),
                           SizedBox(
                             width: double.infinity,
                             child: ElevatedButton(
@@ -240,9 +294,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                   : Text(l.loginButton, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 1)),
                             ),
                           ),
-                          const SizedBox(height: 10),
-                          Center(child: Text(l.loginEnterHint, style: TextStyle(fontSize: 12, color: c.textTertiary))),
-                          const SizedBox(height: 28),
+                          SizedBox(height: isWide ? 24 : 14),
                           Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
@@ -254,7 +306,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             ],
                           ),
 
-                          const SizedBox(height: 28),
+                          SizedBox(height: isWide ? 28 : 12),
 
                           // ── Social divider ──
                           Row(
@@ -268,7 +320,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             ],
                           ),
 
-                          const SizedBox(height: 20),
+                          SizedBox(height: isWide ? 20 : 12),
 
                           // ── Google ──
                           _SocialButton(
@@ -277,7 +329,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             onTap: _isLoading ? null : _signInWithGoogle,
                           ),
 
-                          const SizedBox(height: 12),
+                          SizedBox(height: isWide ? 12 : 8),
 
                           // ── Apple ──
                           _SocialButton(
@@ -286,8 +338,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             onTap: _isLoading ? null : _signInWithApple,
                           ),
 
-                          const SizedBox(height: 8),
+                          if (isWide) const SizedBox(height: 8),
                         ],
+                      ),
+                    ),
                       ),
                     ),
                   ),

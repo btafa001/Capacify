@@ -1,12 +1,18 @@
 import 'package:flutter/material.dart';
 import '../models/report_model.dart';
+import '../constants/app_constants.dart';
 
 class AppLocalizations {
   const AppLocalizations(this.locale);
   final Locale locale;
 
   bool get isEn => locale.languageCode == 'en';
-  String _t(String de, String en) => isEn ? en : de;
+  // Falls back to the other language if the chosen one is accidentally empty,
+  // so a forgotten translation degrades to the other locale instead of a blank.
+  String _t(String de, String en) {
+    if (isEn) return en.isNotEmpty ? en : de;
+    return de.isNotEmpty ? de : en;
+  }
 
   static AppLocalizations of(BuildContext context) {
     return Localizations.of<AppLocalizations>(context, AppLocalizations) ??
@@ -28,6 +34,119 @@ class AppLocalizations {
   String get signOut         => _t('Abmelden', 'Sign out');
   String get expired         => _t('Abgelaufen', 'Expired');
   String get persons         => _t('Personen', 'persons');
+  String get callTooltip     => _t('Anrufen', 'Call');
+  // Perishability + freshness (feed card).
+  String daysLeftLabel(int n) => n <= 1
+      ? _t('nur noch heute', 'today only')
+      : _t('noch $n Tage', '$n days left');
+  String get confirmedTodayLabel => _t('Heute bestätigt', 'Confirmed today');
+  String interestedCountLabel(int n) => n == 1 ? _t('1 interessiert', '1 interested') : _t('$n interessiert', '$n interested');
+  // Effortless posting: repost + one-tap availability reconfirm.
+  String get repostAction        => _t('Erneut posten', 'Repost');
+  String get reconfirmAction     => _t('Noch frei? Bestätigen', 'Still free? Confirm');
+  String get reconfirmedSnackbar => _t('Verfügbarkeit bestätigt – für eine weitere Woche', 'Availability confirmed – for another week');
+  // Company trust signals (member since / last active).
+  String memberSinceLabel(int year) => _t('Mitglied seit $year', 'Member since $year');
+  String responseTimeLabel(int hours) {
+    if (hours <= 1) {
+      return _t('Antwortet meist in unter 1 Std.', 'Usually responds within 1h');
+    }
+    if (hours < 24) {
+      return _t('Antwortet meist in ~$hours Std.', 'Usually responds in ~${hours}h');
+    }
+    final days = (hours / 24).ceil();
+    return days <= 1
+        ? _t('Antwortet meist in ~1 Tag', 'Usually responds in ~1 day')
+        : _t('Antwortet meist in ~$days Tagen', 'Usually responds in ~$days days');
+  }
+  String get activeTodayLabel     => _t('Heute aktiv', 'Active today');
+  String get activeYesterdayLabel => _t('Gestern aktiv', 'Active yesterday');
+  String activeDaysAgoLabel(int n) => _t('Vor $n Tagen aktiv', 'Active $n days ago');
+  // Landing proof-of-life ticker (real counts).
+  String pulseActiveCapacities(int n) => _t('$n Kapazitäten aktiv', '$n active capacities');
+  String pulseCompanies(int n) => _t('$n Firmen dabei', '$n companies onboard');
+  // Saved searches + profile-match relevance.
+  String get saveSearchLabel     => _t('Speichern', 'Save');
+  String get searchSavedSnackbar => _t('Suche gespeichert', 'Search saved');
+  String get savedAnyTradesLabel => _t('Alle Gewerke', 'All trades');
+  String get matchesProfileBadge => _t('Passt zu Ihrem Profil', 'Matches your profile');
+  // ── Milestones (wow moments — professional, fire once) ──────────────────────
+  String get msProfileTitle    => _t('Profil vollständig', 'Profile complete');
+  String get msProfileBody     => _t('Ihr Unternehmen ist jetzt sichtbar und wirkt vertrauenswürdiger.', 'Your company is now visible and looks more trustworthy.');
+  String get msFirstPostTitle  => _t('Ihre erste Kapazität ist live', 'Your first capacity is live');
+  String get msFirstPostBody   => _t('Bauunternehmen in Hamburg können sie ab jetzt entdecken.', 'Construction firms in Hamburg can discover it now.');
+  String get msFirstMsgTitle   => _t('Erste Nachricht gesendet', 'First message sent');
+  String get msFirstMsgBody    => _t('Sobald das Unternehmen annimmt, öffnet sich der Chat.', 'As soon as the company accepts, the chat opens.');
+  String get msFirstConnTitle  => _t('Erste Verbindung', 'First connection');
+  String get msFirstConnBody   => _t('Sie sind jetzt verbunden – viel Erfolg bei der Zusammenarbeit.', 'You are now connected — good luck with the collaboration.');
+  String get msFirstCollabTitle => _t('Erste Zusammenarbeit', 'First collaboration');
+  String get msFirstCollabBody  => _t('Beide Seiten haben bestätigt – ein starkes Vertrauenssignal auf Ihrem Profil.', 'Both sides confirmed — a strong trust signal on your profile.');
+  // Collaboration confirmation (on a granted connection, shown in the chat).
+  String get collabPromptTitle     => _t('Haben Sie zusammengearbeitet?', 'Did you work together?');
+  String get collabPromptBody      => _t('Bestätigen Sie die Zusammenarbeit – zählt für das Vertrauen beider Firmen.', 'Confirm the collaboration — it counts toward both companies\' trust.');
+  String get collabConfirmButton   => _t('Zusammenarbeit bestätigen', 'Confirm collaboration');
+  String get collabWaitingPartner  => _t('Von Ihnen bestätigt – warten auf den Partner', 'Confirmed by you — waiting for the partner');
+  String get collabConfirmedBoth   => _t('Zusammenarbeit bestätigt', 'Collaboration confirmed');
+  String get collabConfirmSnackbar => _t('Danke! Ihre Bestätigung wurde gespeichert.', 'Thanks — your confirmation was saved.');
+  String collabCountLabel(int n)   => n == 1 ? _t('1 Zusammenarbeit', '1 collaboration') : _t('$n Zusammenarbeiten', '$n collaborations');
+  String collabRepeatLabel(int n)  => _t('$n mit Wiederkehr', '$n repeat');
+  // In-app notification center (bell).
+  String get notificationsTitle        => _t('Benachrichtigungen', 'Notifications');
+  String get notificationsEmpty        => _t('Keine neuen Benachrichtigungen.', 'No new notifications.');
+  String get notificationsVermittlungen => _t('Vermittlungen', 'Connections');
+  String get notificationsMessages     => _t('Nachrichten', 'Messages');
+  String get notificationsMatches      => _t('Neue Kapazitäten für Sie', 'New capacities for you');
+  // Admin-only notification section (#9) — verification/flag/rating events.
+  String get notificationsAdminEvents  => _t('Admin', 'Admin');
+  String notificationVerificationSubmitted(String name) =>
+      _t('$name hat eine Verifizierung beantragt', '$name submitted a verification request');
+  String notificationContentFlaggedCompany(String name) =>
+      _t('$name wurde gemeldet', '$name was flagged');
+  String get notificationContentFlaggedCapacity =>
+      _t('Ein Beitrag wurde gemeldet', 'A posting was flagged');
+  String notificationRatingSubmitted(String name) =>
+      _t('Neue Bewertung für $name wartet auf Freigabe', 'A new rating for $name is awaiting approval');
+  String get reportUser                => _t('Nutzer melden', 'Report user');
+  // ── Pricing / plans (H6) ──────────────────────────────────────────────────
+  String get pricingTitle          => _t('Vermittlungen & Tarife', 'Connections & plans');
+  String get pricingEarlyAccessBadge => _t('Early Access', 'Early Access');
+  String pricingEarlyAccessBody(int n) =>
+      _t('Sie erhalten aktuell $n Vermittlungen pro Monat – kostenlos, für alle Funktionen.',
+         'You currently get $n connections per month — free, with every feature unlocked.');
+  String get pricingPlansHeader    => _t('TARIFE (BALD)', 'PLANS (SOON)');
+  String get planCurrentLabel      => _t('Aktiv', 'Active');
+  String get planComingSoon        => _t('Bald', 'Soon');
+  String get planFreeName          => _t('Free', 'Free');
+  String planFreeQuota(int n)      => _t('$n Vermittlungen / Monat', '$n connections / month');
+  String get planFreePrice         => _t('0 €', '€0');
+  String get planFreeDesc          => _t('Zum Ausprobieren – für gelegentliche Anfragen.', 'To get started — for the occasional request.');
+  String get planProName           => _t('Pro', 'Pro');
+  String planProQuota(int n)       => _t('$n Vermittlungen / Monat', '$n connections / month');
+  String get planProPrice          => _t('Bald', 'Soon');
+  String get planProDesc           => _t('Für Firmen, die regelmäßig Kapazität suchen oder anbieten.', 'For firms that regularly seek or offer capacity.');
+  String get planPremiumName       => _t('Premium', 'Premium');
+  String get planPremiumQuota      => _t('Unbegrenzte Vermittlungen', 'Unlimited connections');
+  String get planPremiumPrice      => _t('Bald', 'Soon');
+  String get planPremiumDesc       => _t('Für Vielnutzer und Teams – keine Limits.', 'For power users and teams — no limits.');
+  String get pricingHowCreditsWork => _t(
+      'Eine Vermittlung wird verbraucht, sobald Sie den Kontakt eines Anbieters freischalten. Nicht genutzte Vermittlungen verfallen am Monatsende.',
+      'One connection is used when you unlock a provider\'s contact. Unused connections expire at the end of the month.');
+  String get viewPlansLink         => _t('Tarife ansehen', 'View plans');
+  // Automatic VIES VAT verification (server-side Cloud Function).
+  String get verifyNowVies    => _t('Automatisch prüfen (VIES)', 'Verify automatically (VIES)');
+  String get verifyNeedVatFirst => _t('Bitte zuerst die USt-IdNr. speichern.', 'Please save your VAT number first.');
+  String get verifySuccessVies => _t('USt-IdNr. bestätigt ✓ — zur Freigabe eingereicht.', 'VAT confirmed ✓ — submitted for approval.');
+  String get verifyInvalidVies => _t('USt-IdNr. konnte nicht bestätigt werden. Manuelle Prüfung folgt.', 'VAT could not be confirmed. Manual review will follow.');
+  String get viesConfirmed => _t('VIES: USt-IdNr. gültig', 'VIES: VAT valid');
+  String viesConfirmedWithName(String name) => _t('VIES: gültig — registriert auf „$name"', 'VIES: valid — registered to "$name"');
+  String notificationUnlockedBy(String name) =>
+      _t('$name hat Ihre Anzeige freigeschaltet', '$name unlocked your listing');
+  String get completeProfileToPostTitle =>
+      _t('Profil vervollständigen', 'Complete your profile');
+  String get completeProfileToPostBody => _t(
+      'Bevor Sie eine Kapazität veröffentlichen, vervollständigen Sie bitte Ihr Firmenprofil (Telefon, Adresse, Gewerke und eine kurze Beschreibung). So bleibt der Marktplatz vertrauenswürdig – auch wenn Ihre Anzeige anonym erscheint.',
+      'Before posting a capacity, please complete your company profile (phone, address, trades and a short description). This keeps the marketplace trustworthy — even though your post stays anonymous.');
+  String get completeProfileToPostCta => _t('Zum Profil', 'Go to profile');
   String get days            => _t('Tage', 'days');
   String get active          => _t('aktiv', 'active');
 
@@ -38,7 +157,7 @@ class AppLocalizations {
   String get navStartFreeMobile => 'Start';
 
   // ── Hero ────────────────────────────────────────────────────────────────────
-  String get heroLiveBadge   => _t('31 neue Kapazitäten · heute live', '31 new capacities · live today');
+  String get heroLiveBadge   => _t('Neue Kapazitäten · live aktualisiert', 'New capacity posts · updated live');
   String get heroTitle       => _t('Wer ist heute\n', 'Who is available\n');
   String get heroHighlight   => _t('verfügbar', 'today');
   String get heroSubtitle    => _t(
@@ -51,7 +170,7 @@ class AppLocalizations {
   );
   String get heroCtaRegister => _t('Kostenlos registrieren', 'Register for free');
   String get heroStatLocation => _t('Hamburg', 'Hamburg');
-  String get heroStatTrades   => _t('11 Gewerke', '11 trades');
+  String heroStatTrades(int n) => _t('$n Gewerke', '$n trades');
 
   // ── Preview card demo data ───────────────────────────────────────────────────
   String get card1Title  => _t('3 Elektriker verfügbar',   '3 Electricians available');
@@ -65,39 +184,58 @@ class AppLocalizations {
   String ago(int n)      => isEn ? '${n} min ago' : 'vor ${n} min';
   String get persPeriod  => _t('Pers.', 'pers.');
 
-  // ── Activity demo data ───────────────────────────────────────────────────────
-  String get activity1   => _t('Elektriker in Hamburg – sofort',           'Electricians in Hamburg – now');
-  String get activity2   => _t('Dachdecker für Projekt gesucht',           'Roofers needed for project');
-  String get activity3   => _t('Trockenbauer – Altona · nächste Woche',    'Drywallers – Altona · next week');
-
-  // ── Stats bar ────────────────────────────────────────────────────────────────
-  String get stat1Label  => _t('Aktive Unternehmen', 'Active Companies');
-  String get stat2Label  => _t('Verfügbar heute',    'Available today');
-  String get stat3Label  => _t('Gesuche heute',      'Needs today');
-  String get stat4Label  => _t('Ø Antwortzeit',      'Ø Response time');
-
   // ── How it works ─────────────────────────────────────────────────────────────
   String get howTitle    => _t('Wie es funktioniert',                    'How it works');
   String get howSubtitle => _t('In drei Schritten zur ersten Verbindung.', 'Three steps to your first connection.');
-  String get step1Title  => _t('Kapazität veröffentlichen',              'Post your capacity');
+  String get step1Title  => _t('Anonym entdecken',                       'Discover anonymously');
   String get step1Desc   => _t(
-    'Teilen Sie in 30 Sekunden mit, welche Teams verfügbar sind oder welche Sie suchen.',
-    'In 30 seconds, share which teams are available or which you are looking for.',
+    'Durchsuchen Sie verfügbare Kapazitäten nach Gewerk, Ort und Datum. Anzeigen sind anonym – im Fokus steht die Gelegenheit, nicht die Firma.',
+    'Browse available capacity by trade, location and date. Posts are anonymous — the focus is the opportunity, not the company.',
   );
-  String get step2Title  => _t('Passende Unternehmen finden',            'Find matching companies');
+  String get step2Title  => _t('Nachricht senden',                       'Send a message');
   String get step2Desc   => _t(
-    'Entdecken Sie sofort, wer Ihre Anforderungen erfüllt – nach Gewerk, Ort und Datum.',
-    'Instantly discover who meets your requirements – by trade, location, and date.',
+    'Senden Sie dem anonymen Anbieter eine kostenlose erste Nachricht – ohne Kredite, ohne Bezahlung.',
+    'Send the anonymous poster a free first message — no credits, no payment.',
   );
-  String get step3Title  => _t('Direkt Kontakt aufnehmen',               'Contact directly');
+  String get step3Title  => _t('Verbinden & zusammenarbeiten',           'Connect & collaborate');
   String get step3Desc   => _t(
-    'Telefonieren oder mailen Sie direkt – ohne Mittelsmann, ohne Gebühren.',
-    'Call or email directly – no middleman, no fees.',
+    'Nimmt die Firma an, werden Kontakt und Chat freigeschaltet – Sie besprechen die Zusammenarbeit direkt in der App.',
+    'When the company accepts, contact and chat open — you arrange the collaboration right in the app.',
   );
 
-  // ── Activity section ─────────────────────────────────────────────────────────
-  String get activityTitle    => _t('Aktuelle Aktivität',                               'Recent Activity');
-  String get activitySubtitle => _t('Echte Posts von echten Unternehmen — gerade eben.', 'Real posts from real companies — just now.');
+  // ── Landing: anonymous → unlocked showcase ──────────────────────────────────
+  String get unlockShowcaseTitle => _t('Von anonym zu verbunden – mit einer Nachricht', 'From anonymous to connected — with one message');
+  String get unlockShowcaseSubtitle => _t(
+    'Anzeigen sind anonym. Sie senden eine kostenlose Nachricht – nimmt die Firma an, öffnen sich Kontakt und Chat.',
+    'Posts are anonymous. You send a free message — when the company accepts, contact and chat open.');
+  String get showcaseAnonBadge => _t('FIRMA VERBORGEN', 'COMPANY HIDDEN');
+  // "Connected" — the free message-first outcome (was "UNLOCKED", the old paid reveal).
+  String get showcaseUnlockedBadge => _t('VERBUNDEN', 'CONNECTED');
+  // The middle step is now sending a free message (was the "1 Vermittlung" credit).
+  String get showcaseVermittlungPill => _t('Nachricht senden', 'Send message');
+  String get showcaseHiddenName => _t('Firmenname verborgen', 'Company name hidden');
+  String get showcaseDemoTitle => _t('Dachdecker-Kolonne verfügbar', 'Roofer crew available');
+  String get showcaseDemoRating => _t('4,7 · Verifiziert', '4.7 · Verified');
+
+  // ── For who section ──────────────────────────────────────────────────────────
+  String get forWhoTitle       => _t('Für wen ist Capacify?',                                  'Who is Capacify for?');
+  String get forWhoSubtitle    => _t('Zwei Seiten, ein Ziel: Kapazitäten sinnvoll nutzen.',     'Two sides, one goal: putting capacity to good use.');
+  String get forWhoOfferTag    => _t('HABEN KAPAZITÄT',  'HAVE CAPACITY');
+  String get forWhoOfferTitle  => _t('Team gerade frei?', 'Team free right now?');
+  String get forWhoOfferDesc   => _t(
+    'Veröffentlichen Sie, welche Mitarbeiter oder Maschinen verfügbar sind — und für wie lange.',
+    'Post which workers or machines are available — and for how long.',
+  );
+  String get forWhoOfferPoint1 => _t('In unter 2 Minuten online',          'Live in under 2 minutes');
+  String get forWhoOfferPoint2 => _t('Sichtbar für passende Suchende',     'Visible to matching searchers');
+  String get forWhoNeedTag     => _t('SUCHEN KAPAZITÄT', 'NEED CAPACITY');
+  String get forWhoNeedTitle   => _t('Kurzfristig Unterstützung nötig?',   'Need support on short notice?');
+  String get forWhoNeedDesc    => _t(
+    'Durchsuchen Sie freie Kapazitäten nach Gewerk, Stadtteil und Verfügbarkeit.',
+    'Browse free capacity by trade, district, and availability.',
+  );
+  String get forWhoNeedPoint1  => _t('Filter nach Gewerk & Ort',           'Filter by trade & location');
+  String get forWhoNeedPoint2  => _t('Direkter Kontakt, keine Wartezeit',  'Direct contact, no waiting');
 
   // ── Network section ──────────────────────────────────────────────────────────
   String get networkTitle      => _t('Fokussiert auf Hamburg',                                              'Focused on Hamburg');
@@ -109,13 +247,13 @@ class AppLocalizations {
 
   // ── Trust section ────────────────────────────────────────────────────────────
   String get trustTitle    => _t('Vertrauen & Sicherheit',              'Trust & Safety');
-  String get trustSubtitle => _t('Nur echte Bauunternehmen. Keine Anonymität.', 'Only real construction companies. No anonymity.');
+  String get trustSubtitle => _t('Nur echte, verifizierte Bauunternehmen. Anonyme Anzeigen, geschützter Kontakt.', 'Only real, verified construction companies. Anonymous posts, protected contact.');
   String get trust1Title   => _t('Verifiziert',    'Verified');
   String get trust1Desc    => _t('Geprüfte Unternehmensprofile',            'Verified company profiles');
   String get trust2Title   => _t('Bewertet',       'Rated');
   String get trust2Desc    => _t('Transparente Ratings nach jedem Auftrag', 'Transparent ratings after every job');
-  String get trust3Title   => _t('Blitzschnell',   'Lightning fast');
-  String get trust3Desc    => _t('Ø Antwortzeit unter 2 Stunden',           'Ø Response time under 2 hours');
+  String get trust3Title   => _t('Direkter Kontakt', 'Direct contact');
+  String get trust3Desc    => _t('Telefon & E-Mail sichtbar — kein Vermittler', 'Phone & email visible — no middleman');
   String get trust4Title   => 'GDPR';
   String get trust4Desc    => _t('Datenschutzkonform nach deutschem Recht', 'Data protection compliant under German law');
 
@@ -137,6 +275,38 @@ class AppLocalizations {
   String get footerAGB        => _t('AGB',          'Terms');
   String get footerPrivacy    => _t('Datenschutz',  'Privacy');
   String get footerImprint    => _t('Impressum',    'Imprint');
+  String get footerContact    => _t('Kontakt',      'Contact');
+
+  // ── Cookie / analytics consent (GDPR/TTDSG) ──────────────────────────────────
+  String get consentBody => _t(
+      'Wir verwenden Cookies und Analyse-Tools, um Capacify zu verbessern. Analyse-Cookies werden nur mit Ihrer Einwilligung gesetzt. Sie können Ihre Auswahl jederzeit in den Einstellungen ändern.',
+      'We use cookies and analytics to improve Capacify. Analytics cookies are only set with your consent. You can change your choice anytime in Settings.');
+  String get consentLearnMore => _t('Mehr erfahren', 'Learn more');
+  String get consentAccept    => _t('Akzeptieren', 'Accept');
+  String get consentDecline   => _t('Ablehnen', 'Decline');
+  String get consentSettingsTitle => _t('Analyse & Cookies', 'Analytics & cookies');
+  String get consentSettingsSubtitle =>
+      _t('Anonyme Nutzungsstatistik erlauben', 'Allow anonymous usage analytics');
+  String get analyticsOnSubtitle  => _t('Aktiviert — Sie können jederzeit widerrufen', 'On — you can revoke anytime');
+  String get analyticsOffSubtitle => _t('Deaktiviert — keine Analyse-Cookies', 'Off — no analytics cookies');
+
+  // ── Privacy & data (GDPR export / erasure) ───────────────────────────────────
+  String get privacyDataSectionCaps => _t('DATENSCHUTZ & DATEN', 'PRIVACY & DATA');
+  String get privacyLegalSectionCaps => _t('DATENSCHUTZ & RECHTLICHES', 'PRIVACY & LEGAL');
+  String get exportDataTitle    => _t('Meine Daten exportieren', 'Export my data');
+  String get exportDataSubtitle => _t('Alle zu Ihrem Konto gespeicherten Daten als JSON herunterladen', 'Download everything stored about your account as JSON');
+  String get exportDataStarted  => _t('Download gestartet', 'Download started');
+  String get deleteAccountTitle    => _t('Konto löschen', 'Delete account');
+  String get deleteAccountSubtitle => _t('Konto und personenbezogene Daten dauerhaft entfernen', 'Permanently remove your account and personal data');
+  String get deleteAccountConfirmTitle => _t('Konto wirklich löschen?', 'Delete account?');
+  String get deleteAccountConfirmBody => _t(
+      'Dies entfernt Ihr Konto und anonymisiert Ihr Firmenprofil und Ihre Anzeigen dauerhaft. Bereits abgeschlossene Vermittlungen bleiben aus rechtlichen Gründen anonymisiert erhalten. Dieser Schritt kann nicht rückgängig gemacht werden.',
+      'This removes your account and permanently anonymises your company profile and posts. Completed connections are kept in anonymised form for legal reasons. This cannot be undone.');
+  String get deleteAccountConfirmCta => _t('Endgültig löschen', 'Delete permanently');
+  String get deleteAccountReauthNeeded => _t(
+      'Bitte melden Sie sich zur Sicherheit erneut an und versuchen Sie es dann noch einmal.',
+      'For security, please sign in again and then retry.');
+  String get genericErrorRetry => _t('Ein Fehler ist aufgetreten. Bitte erneut versuchen.', 'Something went wrong. Please try again.');
 
   // ── Social sign-in ───────────────────────────────────────────────────────────
   String get orDivider           => _t('oder', 'or');
@@ -151,12 +321,11 @@ class AppLocalizations {
   String get loginSloganSub   => _t('Freie Teams sichtbar machen.', 'Make free teams visible.');
   String get loginQuote1      => _t('Jede Lücke kostet.', 'Every gap costs you.');
   String get loginQuote2      => _t('Schließen Sie sie in Stunden – nicht Wochen.', 'Close it in hours — not weeks.');
-  String get loginLiveBadge   => 'LIVE · Hamburg · 50 km Radius';
+  String get loginLiveBadge   => 'LIVE · $kServiceRegion · $kServiceRadiusKm km Radius';
   String get emailLabel       => 'E-Mail';
   String get passwordLabel    => _t('Passwort',           'Password');
   String get forgotPassword   => _t('Passwort vergessen?', 'Forgot password?');
   String get loginButton      => _t('ANMELDEN',  'SIGN IN');
-  String get loginEnterHint   => _t('oder ENTER drücken', 'or press ENTER');
   String get noAccount        => _t('Noch kein Konto? ',  'No account? ');
   String get registerLink     => _t('Registrieren',       'Register');
   String get invalidEmail     => _t('Ungültige E-Mail',   'Invalid email');
@@ -164,6 +333,7 @@ class AppLocalizations {
   // ── Register ─────────────────────────────────────────────────────────────────
   String get registerTitle    => _t('Konto erstellen',               'Create account');
   String get registerSubtitle => _t('Werden Sie Teil der Kapazitätsbörse.', 'Join the capacity exchange.');
+  String get registerQuickNote => _t('Nur das Nötigste — den Rest Ihres Unternehmensprofils füllen Sie danach aus.', 'Just the essentials — you can fill in the rest of your company profile afterward.');
   String get sectionPersonal  => _t('PERSÖNLICHE DATEN',  'PERSONAL DATA');
   String get firstNameLabel   => _t('Vorname *',          'First name *');
   String get firstNameHint    => _t('Max',                'John');
@@ -189,16 +359,17 @@ class AppLocalizations {
   String get companyEmailHint  => _t('info@mustermann-gmbh.de', 'info@company.com');
   String get websiteLabel     => 'Website';
   String get sectionVerify    => _t('VERIFIZIERUNG', 'VERIFICATION');
+  String get verifiedBadgeLabel => _t('Ihr Unternehmen ist verifiziert', 'Your company is verified');
   String get vatLabel         => _t('Umsatzsteuer-ID (USt-IdNr.)', 'VAT number');
   String get vatHint          => 'DE123456789';
   String get vatError         => _t('Format: DE + 9 Ziffern (z.B. DE123456789)', 'Format: DE + 9 digits (e.g. DE123456789)');
   String get verifyHowTitle   => _t('Wie die Verifizierung funktioniert', 'How verification works');
   String get verifySteps      => _t(
     '1. Geben Sie Ihre USt-IdNr. ein\n'
-    '2. Senden Sie eine Kopie Ihres Steuerdokuments an: verifizierung@capacify.de\n'
+    '2. Senden Sie eine Kopie Ihres Steuerdokuments an: info@capacify.de\n'
     '3. Nach Prüfung erhalten Sie das ✓ VERIFIZIERT Badge auf Ihrem Profil',
     '1. Enter your VAT number\n'
-    '2. Send a copy of your tax document to: verifizierung@capacify.de\n'
+    '2. Send a copy of your tax document to: info@capacify.de\n'
     '3. After review, you will receive the ✓ VERIFIED badge on your profile',
   );
   String get consentPrefix    => _t(
@@ -224,6 +395,8 @@ class AppLocalizations {
   String get toLogin           => _t('Zur Anmeldung', 'Sign in');
   String get enterEmail        => _t('Bitte E-Mail eingeben',   'Please enter email');
   String get invalidEmailAddr  => _t('Ungültige E-Mail-Adresse', 'Invalid email address');
+  String get invalidPhoneNumber => _t('Ungültige Telefonnummer', 'Invalid phone number');
+  String get invalidPostalCode  => _t('Ungültige Postleitzahl (5 Ziffern)', 'Invalid postal code (5 digits)');
   String get enterPassword     => _t('Bitte Passwort eingeben',  'Please enter password');
   String get min8Chars         => _t('Mindestens 8 Zeichen',     'At least 8 characters');
   String get agbLabel          => _t('AGB', 'Terms');
@@ -235,19 +408,34 @@ class AppLocalizations {
   String get navMyListings   => _t('Meine Postings', 'My Listings');
   String get navFavorites    => _t('Favoriten',      'Favorites');
   String get navAdmin        => 'Admin';
-  String get navAnalytics    => 'Analytics';
   String get comingSoonTag   => _t('Bald verfügbar', 'Coming soon');
   String get navPostCapacity => _t('Kapazität posten', 'Post Capacity');
   String get sidebarFeedback => _t('Feedback geben',  'Give feedback');
+  String get sidebarInvite   => _t('Firma einladen',  'Invite a company');
   String get sidebarQuote    => _t('"Wo Angebot und Bedarf\nzusammenkommen."', '"Where supply and demand meet."');
 
+  // ── Invite / share dialog ──────────────────────────────────────────────────
+  String get inviteTitle       => _t('Ein Unternehmen einladen', 'Invite a company');
+  String get inviteSubtitle    => _t('Je mehr Betriebe mitmachen, desto mehr Aufträge und Kapazitäten für alle. Teilen Sie Capacify mit Ihrem Netzwerk.', 'The more companies join, the more jobs and capacity for everyone. Share Capacify with your network.');
+  String get inviteMessage     => _t('Ich nutze Capacify — die Live-Kapazitätsbörse für Bauunternehmen in Hamburg. Freie Kapazitäten anbieten oder Partner für Aufträge finden. Kostenlos: https://capacify-mvp.web.app', 'I use Capacify — the live capacity exchange for construction companies in Hamburg. Offer spare capacity or find partners for jobs. Free: https://capacify-mvp.web.app');
+  String get inviteCopyLink    => _t('Einladung kopieren', 'Copy invitation');
+  String get inviteCopied      => _t('Einladung in die Zwischenablage kopiert', 'Invitation copied to clipboard');
+  String get inviteViaEmail    => _t('Per E-Mail einladen', 'Invite via email');
+  String get inviteViaWhatsapp => _t('Per WhatsApp einladen', 'Invite via WhatsApp');
+  String get inviteEmailSubject => _t('Einladung zu Capacify', 'Invitation to Capacify');
+
+  // ── Poster pull-back: pending requests on own posts ────────────────────────
+  String newRequestsBadge(int n) => n == 1
+      ? _t('1 neue Anfrage', '1 new request')
+      : _t('$n neue Anfragen', '$n new requests');
+
   // ── Dashboard topbar ─────────────────────────────────────────────────────────
-  String get menuProfile      => _t('Mein Profil',       'My Profile');
-  String get menuCompany      => _t('Mein Unternehmen',  'My Company');
+  String get menuProfile      => _t('Profil',       'Profile');
+  String get menuCompany      => _t('Unternehmen',  'Company');
   String get menuSettings     => _t('Einstellungen',     'Settings');
   String get menuLogout       => _t('Abmelden',          'Sign out');
   String get topBarTitle      => _t('LIVE KAPAZITÄTSBÖRSE', 'LIVE CAPACITY EXCHANGE');
-  String get topBarSubtitle   => 'Hamburg · 50 km Radius';
+  String get topBarSubtitle   => '$kServiceRegion · $kServiceRadiusKm km Radius';
   String get accountSettings  => _t('Konto & Einstellungen', 'Account & Settings');
   String get fabPostCapacity  => _t('KAPAZITÄT POSTEN', 'POST CAPACITY');
   String get noCompanyFirst   => _t('Erstellen Sie zuerst ein Unternehmensprofil.', 'Please create a company profile first.');
@@ -297,20 +485,31 @@ class AppLocalizations {
   String tradeName(String trade) {
     if (!isEn) return trade;
     switch (trade) {
-      case 'Generalunternehmer': return 'General Contractor';
+      // Current (consolidated) values
       case 'Rohbau': return 'Shell Construction';
       case 'Trockenbau': return 'Drywall';
       case 'Elektro': return 'Electrical';
-      case 'Sanitär & Heizung': return 'Plumbing & Heating';
+      case 'SHK': return 'Plumbing & HVAC';
+      case 'Maler': return 'Painter';
       case 'Dach': return 'Roofing';
       case 'Fassade': return 'Facade';
+      case 'Gerüstbau': return 'Scaffolding';
       case 'Tiefbau': return 'Civil Engineering';
+      case 'Fliesen & Boden': return 'Tiling & Flooring';
+      case 'Beton & Stahl': return 'Concrete & Steel';
+      case 'Andere': return 'Other';
+      // Legacy values — kept so any historical/un-migrated string still
+      // translates rather than falling through to the raw German word.
+      case 'Generalunternehmer': return 'General Contractor';
+      case 'Sanitär & Heizung': return 'Plumbing & Heating';
       case 'Architektur': return 'Architecture';
       case 'Statik': return 'Structural Engineering';
       case 'Stahl': return 'Steel';
       case 'Beton': return 'Concrete';
       case 'HVAC': return 'HVAC';
       case 'Lieferant': return 'Supplier';
+      case 'Fliesenleger': return 'Tiler';
+      case 'Bodenleger': return 'Flooring';
       default: return trade;
     }
   }
@@ -343,6 +542,14 @@ class AppLocalizations {
   String minutesAgo(int n)          => isEn ? '${n}min ago' : 'vor ${n}min';
   String hoursAgo(int n)            => isEn ? '${n}h ago' : 'vor ${n}h';
   String daysAgoShort(int n)        => isEn ? '${n}d ago' : 'vor ${n}d';
+  // Trade-led post titles (lead with the Gewerk, never the poster).
+  String postTitleOffer(String trade) => _t('$trade-Kolonne verfügbar', '$trade crew available');
+  String postTitleNeed(String trade)  => _t('$trade-Kolonne gesucht', '$trade crew needed');
+  // Freshness — honest "updated" copy off updatedAt.
+  String get updatedTodayLabel      => _t('Aktualisiert heute', 'Updated today');
+  String updatedDaysAgo(int n)      => isEn
+      ? 'Updated ${n == 1 ? '1 day' : '$n days'} ago'
+      : 'Aktualisiert vor ${n == 1 ? '1 Tag' : '$n Tagen'}';
 
   // ── Live feed ─────────────────────────────────────────────────────────────────
   String get tabAll              => _t('ALLE', 'ALL');
@@ -353,14 +560,45 @@ class AppLocalizations {
   String get whenNow             => _t('Sofort verfügbar', 'Available now');
   String get whenThisWeek        => _t('Diese Woche', 'This week');
   String get whenNextWeek        => _t('Nächste Woche', 'Next week');
+  String get retryButton         => _t('Erneut versuchen', 'Try again');
+  // Crew-size filter (feed facet).
+  String get crewLabel           => _t('Teamgröße', 'Crew size');
+  String get crewAny             => _t('Beliebige Größe', 'Any size');
+  String get crew1plus           => _t('ab 1 Person', '1+ people');
+  String get crew3plus           => _t('ab 3 Personen', '3+ people');
+  String get crew5plus           => _t('ab 5 Personen', '5+ people');
+  String get crew10plus          => _t('ab 10 Personen', '10+ people');
   String get tradeFilterLabel    => _t('Gewerk', 'Trade');
+  String get applyFilterButton   => _t('Anwenden', 'Apply');
+  String get maxTwoTradesNotice  => _t('Maximal 2 Gewerke auswählen', 'Select up to 2 trades');
+  String get selectAtLeastOneTrade => _t('Bitte wählen Sie mindestens ein Gewerk', 'Please select at least one trade');
   String get feedEmptyTitle      => _t('Keine Kapazitäten', 'No capacities');
   String get feedEmptySubtitle   => _t(
     'Passen Sie die Filter an\noder posten Sie eine neue Kapazität.',
     'Adjust the filters\nor post a new capacity.',
   );
   String get loadMoreButton      => _t('Mehr laden', 'Load more');
-  String errorWithMessage(Object e) => _t('Fehler: $e', 'Error: $e');
+  // Maps an exception to a friendly, non-leaky message. Raw Firestore/Dart
+  // exception text is never shown to the user (unprofessional + minor info
+  // leak); common cases (no permission / offline) get a specific message,
+  // everything else a generic one.
+  String errorWithMessage(Object e) {
+    final s = e.toString().toLowerCase();
+    if (s.contains('permission-denied') || s.contains('permission_denied')) {
+      return _t('Dazu haben Sie keine Berechtigung.',
+          'You don\'t have permission to do that.');
+    }
+    if (s.contains('unavailable') || s.contains('network') || s.contains('offline')) {
+      return _t('Keine Verbindung. Bitte prüfen Sie Ihr Internet und versuchen Sie es erneut.',
+          'No connection. Please check your internet and try again.');
+    }
+    if (s.contains('not-found') || s.contains('not_found')) {
+      return _t('Nicht gefunden. Möglicherweise wurde der Eintrag entfernt.',
+          'Not found. It may have been removed.');
+    }
+    return _t('Ein Fehler ist aufgetreten. Bitte erneut versuchen.',
+        'Something went wrong. Please try again.');
+  }
   String get closeLabel          => _t('Schließen', 'Close');
   String get shareSheetTitle     => _t('Post teilen', 'Share post');
   String get shareFoundOnCapacify => _t(
@@ -460,6 +698,9 @@ class AppLocalizations {
   String get awardJobButtonCaps   => _t('AUFTRAG VERGEBEN', 'AWARD JOB');
   String get cancelPostingButton  => _t('Posting stornieren', 'Cancel posting');
   String get callButton           => _t('Anrufen', 'Call');
+  String get priceProposalTip     => _t('Tipp: Schlagen Sie direkt einen Preis vor, um das Gespräch produktiver zu machen.', 'Tip: Suggest a price upfront to make the conversation more productive.');
+  String get contactGateMessage   => _t('Vervollständigen Sie Ihr Unternehmensprofil, um Unternehmen kontaktieren zu können.', 'Complete your company profile to be able to contact companies.');
+  String get contactGateButton    => _t('Profil vervollständigen', 'Complete profile');
   String copyTooltip(String label) => _t('$label kopieren', 'Copy $label');
 
   // ── Company profile (Unternehmensprofil) ─────────────────────────────────────
@@ -471,9 +712,22 @@ class AppLocalizations {
   String get tradeBranchLabel     => _t('Gewerk / Branche *', 'Trade / Industry *');
   String get descriptionRequiredLabel => _t('Beschreibung *', 'Description *');
   String get describeCompanyHint  => _t('Beschreiben Sie Ihr Unternehmen...', 'Describe your company...');
+  String get certificationsLabel  => _t('Qualifikationen & Mitgliedschaften', 'Qualifications & memberships');
+  String get certificationsHint   => _t('z. B. Meisterbetrieb, Innung SHK Hamburg, Betriebshaftpflicht', 'e.g. master craftsman, guild membership, liability insurance');
+  String get certificationsTitle  => _t('Qualifikationen & Mitgliedschaften', 'Qualifications & memberships');
   String get contactInfoSection   => _t('Kontaktinformationen', 'Contact Information');
   String get websiteHint          => _t('https://www.ihre-firma.de', 'https://www.your-company.com');
   String get locationSection      => _t('Standort', 'Location');
+  String profileCompletePercent(int percent) => _t('Profil zu $percent% vervollständigt', 'Profile $percent% complete');
+  String get incompleteProfileBannerTitle => _t('Vervollständigen Sie Ihr Unternehmensprofil', 'Complete your company profile');
+  String incompleteProfileBannerSubtitle(int percent) => _t('Nur zu $percent% ausgefüllt — andere sehen mehr, wenn Ihr Profil vollständig ist.', 'Only $percent% filled in — others will see more once your profile is complete.');
+  String get completeProfileButton => _t('Jetzt vervollständigen', 'Complete now');
+  // Getting-started activation card (new-user first-run path).
+  String get gettingStartedTitle    => _t('Erste Schritte', 'Get started');
+  String get gettingStartedSubtitle => _t('In 3 Schritten sichtbar für Hamburgs Baufirmen — und startklar für Kooperationen.', 'Three steps to being visible to Hamburg\'s construction firms — and ready to collaborate.');
+  String get gsStepProfile          => _t('Unternehmensprofil vervollständigen', 'Complete your company profile');
+  String get gsStepPost             => _t('Erste Kapazität posten', 'Post your first capacity');
+  String get gsStepAlerts           => _t('E-Mail-Benachrichtigungen einschalten', 'Turn on email alerts');
   String get addressLabel         => _t('Adresse', 'Address');
   String get addressHint          => _t('Musterstraße 1', '123 Main Street');
   String get postalCodeLabel      => _t('PLZ', 'Postal code');
@@ -530,7 +784,7 @@ class AppLocalizations {
   String get endDateChip         => _t('Ende', 'End');
   String get section4LocationHamburg => _t('4. Standort in Hamburg', '4. Location in Hamburg');
   String get section5WorkerCount  => _t('5. Anzahl Personen', '5. Number of people');
-  String get section6Description  => _t('6. Beschreibung', '6. Description');
+  String get section6Description  => _t('6. Beschreibung (optional)', '6. Description (optional)');
   String get descriptionExampleHint => _t(
     'z.B. "5 Trockenbauer ab Montag, alle Werkzeuge dabei, Führerschein vorhanden..."',
     'e.g. "5 drywall workers from Monday, all tools included, driver\'s license available..."',
@@ -565,6 +819,10 @@ class AppLocalizations {
   String get commentOptionalHint  => _t('Wie war die Zusammenarbeit?', 'How was working with them?');
   String get submitRatingButton   => _t('Bewertung abschicken', 'Submit rating');
   String get ratingSubmittedSuccess => _t('Bewertung gespeichert', 'Rating saved');
+  String get deleteRatingButton   => _t('Bewertung löschen', 'Delete rating');
+  String get deleteRatingConfirmTitle => _t('Bewertung löschen?', 'Delete rating?');
+  String get deleteRatingConfirmBody => _t('Diese Bewertung wird endgültig entfernt und kann nicht wiederhergestellt werden.', 'This rating will be permanently removed and cannot be restored.');
+  String get ratingDeletedSnackbar => _t('Bewertung gelöscht', 'Rating deleted');
   String get selectRatingValidation => _t('Bitte wählen Sie eine Bewertung', 'Please select a rating');
   String get reviewsSectionTitle  => _t('Bewertungen', 'Reviews');
   String get noReviewsYetText     => _t('Noch keine Bewertungen', 'No reviews yet');
@@ -613,9 +871,9 @@ class AppLocalizations {
   String get settingsTitle        => _t('Einstellungen', 'Settings');
   String get notificationsSection => _t('BENACHRICHTIGUNGEN', 'NOTIFICATIONS');
   String get emailNotificationsTitle => _t('E-Mail Benachrichtigungen', 'Email notifications');
-  String get emailNotificationsSubtitle => _t('Updates per E-Mail erhalten', 'Receive updates via email');
-  String get newCapacitiesTitle   => _t('Neue Kapazitäten', 'New capacities');
-  String get newPostingsSubtitle  => _t('Benachrichtigung bei neuen Postings', 'Notification for new postings');
+  String get emailNotificationsSubtitle => _t('Bei neuen Anfragen zu Ihren Anzeigen', 'When you receive a new request on your posts');
+  String get newCapacitiesTitle   => _t('Neue passende Kapazitäten', 'New matching capacities');
+  String get newPostingsSubtitle  => _t('E-Mail bei neuen Treffern in Ihrem Gewerk + Wochenüberblick', 'Email on new matches in your trade + weekly overview');
   String get messagesTitle        => _t('Nachrichten', 'Messages');
   String get newMessagesSubtitle  => _t('Benachrichtigung bei neuen Nachrichten', 'Notification for new messages');
   String get legalSection         => _t('RECHTLICHES', 'LEGAL');
@@ -652,7 +910,7 @@ class AppLocalizations {
   // ── Admin panel ───────────────────────────────────────────────────────────────
   String get adminPanelTitle      => 'Admin Panel';
   String get adminBadge           => 'ADMIN';
-  String get overviewTab          => _t('ÜBERSICHT', 'OVERVIEW');
+  String get overviewTab          => _t('DASHBOARD', 'DASHBOARD');
   String get verificationTab      => _t('VERIFIZIERUNG', 'VERIFICATION');
   String get companiesTabCaps     => _t('UNTERNEHMEN', 'COMPANIES');
   String get platformOverviewSection => _t('PLATTFORM-ÜBERSICHT', 'PLATFORM OVERVIEW');
@@ -663,6 +921,79 @@ class AppLocalizations {
   String get pendingReviewsLabel  => _t('Ausstehende Prüfungen', 'Pending reviews');
   String get noneLabel            => _t('Keine', 'None');
   String waitingCount(int n)      => _t('$n warten', '$n waiting');
+
+  // ── Admin Dashboard (operational control center) ───────────────────────────
+  String get kpiRegistered        => _t('Registrierte Unternehmen', 'Registered companies');
+  String get kpiVerified          => _t('Verifizierte Unternehmen', 'Verified companies');
+  String get kpiActive30          => _t('Aktiv (30 Tage)', 'Active (30 days)');
+  String get kpiActiveListings    => _t('Aktive Anzeigen', 'Active listings');
+  String get kpiNewRegs30         => _t('Neue Registrierungen (30T)', 'New registrations (30d)');
+  String get kpiNewListings30     => _t('Neue Anzeigen (30T)', 'New listings (30d)');
+
+  String get dashGrowthSection    => _t('WACHSTUM', 'GROWTH');
+  String get growthRegs7          => _t('Registrierungen (7 Tage)', 'Registrations (7 days)');
+  String get growthRegs30         => _t('Registrierungen (30 Tage)', 'Registrations (30 days)');
+  String get growthListings7      => _t('Anzeigen (7 Tage)', 'Listings (7 days)');
+  String get growthListings30     => _t('Anzeigen (30 Tage)', 'Listings (30 days)');
+  String get growthAvgPerCompany  => _t('Ø Anzeigen pro Unternehmen', 'Avg listings per company');
+  String get growthMin1           => _t('Unternehmen mit ≥ 1 Anzeige', 'Companies with ≥ 1 listing');
+  String get growthMin2           => _t('Unternehmen mit ≥ 2 Anzeigen', 'Companies with ≥ 2 listings');
+
+  String get healthCompaniesNoListing => _t('Unternehmen ohne Anzeige', 'Companies without a listing');
+  String get healthInactive30     => _t('Inaktiv seit 30+ Tagen', 'Inactive 30+ days');
+  String get healthInactive60     => _t('Inaktiv seit 60+ Tagen', 'Inactive 60+ days');
+  String get healthOpenVerifications => _t('Offene Prüfungen', 'Open verifications');
+  String get healthOpenModerations => _t('Offene Moderationen', 'Open moderations');
+
+  String get dashGewerkeSection   => _t('GEWERKE-PERFORMANCE', 'TRADE PERFORMANCE');
+  String gewerkeStat(int listings, int companies) =>
+      _t('$listings Anzeigen · $companies Firmen', '$listings listings · $companies firms');
+
+  String get dashOnboardingSection => _t('ONBOARDING-FUNNEL', 'ONBOARDING FUNNEL');
+  String get funnelRegistered     => _t('Registriert', 'Registered');
+  String get funnelProfileComplete => _t('Profil vollständig', 'Profile complete');
+  String get funnelFirstListing   => _t('Erste Anzeige', 'First listing');
+  String get funnelSecondListing  => _t('Zweite Anzeige', 'Second listing');
+  String get funnelActive30       => _t('Aktiv (30 Tage)', 'Active (30 days)');
+
+  String get dashLiquiditySection => _t('MARKTPLATZ-LIQUIDITÄT', 'MARKETPLACE LIQUIDITY');
+  String get liqOffers            => _t('Verfügbare Kapazitäten', 'Available capacity');
+  String get liqNeeds             => _t('Gesuche', 'Requests');
+  String get liqAvgPerDay         => _t('Ø Anzeigen pro Tag', 'Avg listings per day');
+  String get liqAvgDuration       => _t('Ø Anzeigenlaufzeit', 'Avg listing age');
+  String daysShort(int n)         => _t('$n Tage', '$n days');
+
+  String get dashInsightsSection  => _t('KI-ERKENNTNISSE', 'AI INSIGHTS');
+  String insightTopTrade(String trade, int pct) =>
+      _t('$trade erzeugt $pct% aller Anzeigen.', '$trade generates $pct% of all listings.');
+  String insightNoListing(int n) => _t(
+      '$n Unternehmen haben sich registriert, aber noch keine Anzeige erstellt.',
+      '$n companies registered but have not posted a listing yet.');
+  String insightTopCity(String city) =>
+      _t('$city ist aktuell die aktivste Region.', '$city is currently the most active region.');
+  String insightVerification(int pct) =>
+      _t('$pct% der Unternehmen sind verifiziert.', '$pct% of companies are verified.');
+  String insightGrowth(int n) =>
+      _t('$n neue Registrierungen in den letzten 30 Tagen.', '$n new registrations in the last 30 days.');
+  String insightInactive(int n) => _t(
+      '$n Unternehmen sind seit über 30 Tagen inaktiv — Reaktivierung lohnt sich.',
+      '$n companies have been inactive for 30+ days — worth reactivating.');
+  String get insightNeedMore      => _t('Noch zu wenig Aktivität für belastbare Erkenntnisse.', 'Not enough activity yet for meaningful insights.');
+
+  String get dashConversionSection => _t('CONVERSION', 'CONVERSION');
+  String get convVisitors         => _t('Website-Besucher', 'Website visitors');
+  String get convVisitorsHint     => _t('in Google Analytics', 'in Google Analytics');
+  String get convFirstListing     => _t('Mit 1. Anzeige', 'With 1st listing');
+  String get convSecondListing    => _t('Mit 2. Anzeige', 'With 2nd listing');
+
+  String get dashActionSection    => _t('AKTIONSCENTER', 'ACTION CENTER');
+  String get actionNeverPosted    => _t('Registriert, aber ohne Anzeige', 'Registered but never posted');
+  String get actionPostedInactive => _t('1 Anzeige, dann 30+ Tage inaktiv', '1 listing, then inactive 30+ days');
+  String get actionIncompleteProfile => _t('Unvollständiges Profil', 'Incomplete profile');
+  String get actionContact        => _t('Kontaktieren', 'Contact');
+  String get actionCheckProfile   => _t('Profil prüfen', 'Check profile');
+  String actionMore(int n)        => _t('+ $n weitere', '+ $n more');
+  String get actionAllClear       => _t('Keine offenen Aktionen — alles im grünen Bereich.', 'No open actions — all clear.');
   String get setupAdminAccessSection => _t('ADMIN-ZUGANG EINRICHTEN', 'SET UP ADMIN ACCESS');
   String get addNewAdminLabel     => _t('Neuen Admin hinzufügen:', 'Add new admin:');
   String get addAdminInstructions => _t(
@@ -699,6 +1030,10 @@ class AppLocalizations {
   String get ratingsTab            => _t('BEWERTUNGEN', 'RATINGS');
   String get noPendingRatingsTitle => _t('Keine ausstehenden Bewertungen', 'No pending ratings');
   String get allRatingsReviewedText => _t('Alle Bewertungen sind geprüft.', 'All ratings have been reviewed.');
+  // One-time backfill for ratings whose aggregate was inflated by a deletion
+  // that predates the auto-recompute fix — see recomputeAllRatingAggregates.
+  String get recomputeRatingsButton  => _t('Bewertungen neu berechnen', 'Recalculate ratings');
+  String recomputeRatingsSuccess(int n) => _t('$n Unternehmen aktualisiert.', '$n companies updated.');
   String get confirmApproveRatingTitle => _t('Bewertung freigeben?', 'Approve rating?');
   String get confirmRejectRatingTitle => _t('Bewertung ablehnen?', 'Reject rating?');
   String ratingApprovedBody(String raterName, String ratedName) => _t(
@@ -757,6 +1092,249 @@ class AppLocalizations {
   String get resetPasswordTitle   => _t('Passwort zurücksetzen', 'Reset password');
   String get sendLinkViaEmailText => _t('Wir senden Ihnen einen Link per E-Mail.', 'We will send you a link via email.');
   String get sendLinkButton       => _t('Link senden', 'Send link');
+
+  // ── Admin-assisted onboarding ───────────────────────────────────────────────────
+  String get onboardTab           => _t('ONBOARDING', 'ONBOARDING');
+  String get onboardTabTitle      => _t('Unternehmen onboarden', 'Onboard a company');
+  String get onboardIntroTitle    => _t('Telefon-Onboarding', 'Phone onboarding');
+  String get onboardIntroBody     => _t(
+    'Erstellen Sie während eines Anrufs ein Konto für ein Unternehmen, richten Sie das Profil ein und senden Sie einen Link zum Festlegen des Passworts.',
+    'Create an account for a company during a call, set up their profile, and send them a link to set their password.',
+  );
+  String get onboardStartButton   => _t('Onboarding starten', 'Start onboarding');
+  // Step 1 — account + basics
+  String get onboardStep1Title    => _t('1. Konto & Eckdaten', '1. Account & basics');
+  String get onboardStep1Subtitle => _t('E-Mail des Unternehmens und Basisdaten. Das Konto wird sofort erstellt.', 'Company email and basic details. The account is created immediately.');
+  String get onboardEmailLabel    => _t('E-Mail des Unternehmens', 'Company email');
+  String get onboardCompanyNameLabel => _t('Firmenname', 'Company name');
+  String get onboardCreateAccountButton => _t('Konto erstellen', 'Create account');
+  String get onboardAccountCreatedBanner => _t('Konto erstellt ✓', 'Account created ✓');
+  // Step 2 — profile refinement
+  String get onboardStep2Title    => _t('2. Profil vervollständigen', '2. Complete the profile');
+  String get onboardStep2Subtitle => _t('Optional — während des Anrufs ausfüllen. Kann später ergänzt werden.', 'Optional — fill in during the call. Can be completed later.');
+  String get onboardSaveProfileButton => _t('Profil speichern', 'Save profile');
+  String get onboardProfileSavedSnackbar => _t('Profil gespeichert ✓', 'Profile saved ✓');
+  // Step 3 — optional first post
+  String get onboardStep3Title    => _t('3. Erste Anzeige (optional)', '3. First post (optional)');
+  String get onboardStep3Subtitle => _t('Veröffentlichen Sie optional eine erste Kapazität für das Unternehmen.', 'Optionally publish a first capacity post for the company.');
+  String get onboardAddFirstPostButton => _t('Erste Anzeige erstellen', 'Create first post');
+  String get onboardSkipPostButton => _t('Ohne Anzeige fortfahren', 'Continue without a post');
+  String get skipButton           => _t('Überspringen', 'Skip');
+  String get onboardFirstPostDoneBanner => _t('Erste Anzeige veröffentlicht ✓', 'First post published ✓');
+  // Step 4 — send invite
+  String get onboardStep4Title    => _t('4. Einladung senden', '4. Send invitation');
+  String get onboardStep4Subtitle => _t('Das Unternehmen erhält einen Link, um sein eigenes Passwort festzulegen und sich anzumelden.', 'The company receives a link to set their own password and sign in.');
+  String onboardInviteSummary(String name, String email) => _t(
+    'Einladung an $name ($email) senden.',
+    'Send an invitation to $name ($email).',
+  );
+  String get onboardSendInviteButton => _t('Einladung senden', 'Send invitation');
+  String get onboardInviteSentSnackbar => _t('Einladung gesendet ✓', 'Invitation sent ✓');
+  String get onboardFinishButton  => _t('Fertig', 'Done');
+  // Errors / states
+  String get onboardEmailInUseError => _t(
+    'Dieses Unternehmen hat bereits ein Konto. Bitte zur normalen Anmeldung / „Passwort vergessen" verweisen.',
+    'This company already has an account. Direct them to normal sign-in / "forgot password" instead.',
+  );
+  String get onboardGenericError  => _t('Konto konnte nicht erstellt werden. Bitte erneut versuchen.', 'Could not create the account. Please try again.');
+  // Tracking lists (admin tab)
+  String get onboardNotInvitedSection => _t('Erstellt — noch nicht eingeladen', 'Created — not yet invited');
+  String get onboardInvitedSection => _t('Eingeladen', 'Invited');
+  String get onboardNoFollowupsText => _t('Keine offenen Onboardings', 'No pending onboardings');
+  String get onboardSendInviteAction => _t('Einladung senden', 'Send invite');
+
+  // ── Anonymized posts + gated contact requests ──────────────────────────────────
+  String get requestContactButton => _t('Kontakt anfragen', 'Request contact');
+  String get contactRequestSentSnackbar => _t('Anfrage gesendet — Kontakt wird vermittelt', 'Request sent — we\'ll broker the contact');
+  String get contactRequestPendingNotice => _t('Anfrage gesendet. Wir vermitteln den Kontakt.', 'Request sent. We\'re brokering the contact.');
+  String get completeProfileToRequestNotice => _t('Vervollständigen Sie Ihr Profil, um Kontakt anzufragen.', 'Complete your profile to request contact.');
+  String get didItWorkOutPrompt   => _t('Hat\'s geklappt?', 'Did it work out?');
+  String get outcomeMatchedLabel  => _t('Ja, vermittelt', 'Yes, matched');
+  String get outcomeNoDealLabel   => _t('Kein Deal', 'No deal');
+  String get thanksForFeedbackSnackbar => _t('Danke für dein Feedback', 'Thanks for your feedback');
+  // Requester "Meine Anfragen"
+  String get myRequestsTitle      => _t('Meine Anfragen', 'My requests');
+  String get noRequestsYetText    => _t('Noch keine Anfragen', 'No requests yet');
+  String requestStatusLabel(String status) {
+    switch (status) {
+      case 'pending_review': return _t('In Prüfung', 'Under review');
+      case 'pending':        return _t('Gesendet — wartet auf Anbieter', 'Sent — awaiting provider');
+      case 'granted':        return _t('Freigeschaltet — Kontakt verfügbar', 'Unlocked — contact available');
+      case 'declined':       return _t('Abgelehnt', 'Declined');
+      case 'closed':         return _t('Geschlossen', 'Closed');
+      default:               return _t('Ausstehend', 'Pending');
+    }
+  }
+  // Compact variant for the tile chips on "Meine Anfragen".
+  String requestStatusShort(String status) {
+    switch (status) {
+      case 'pending_review': return _t('In Prüfung', 'In review');
+      case 'pending':        return _t('Gesendet', 'Sent');
+      case 'granted':        return _t('Freigeschaltet', 'Unlocked');
+      case 'declined':       return _t('Abgelehnt', 'Declined');
+      case 'closed':         return _t('Geschlossen', 'Closed');
+      default:               return _t('Ausstehend', 'Pending');
+    }
+  }
+  // Admin "Kontaktanfragen" tab
+  String get contactRequestsTab   => _t('ANFRAGEN', 'REQUESTS');
+  String get noContactRequestsText => _t('Keine Kontaktanfragen', 'No contact requests');
+  String get requesterLabel       => _t('Anfragender', 'Requester');
+  String get posterLabel          => _t('Anbieter', 'Poster');
+  String get outcomeFieldLabel    => _t('Ergebnis', 'Outcome');
+  String get valueEstimateLabel   => _t('Wert', 'Value');
+  String get valueHochLabel       => _t('Hoch', 'High');
+  String get valueMittelLabel     => _t('Mittel', 'Medium');
+  String get valueNiedrigLabel    => _t('Niedrig', 'Low');
+  String get brokerButton         => _t('Vermitteln', 'Broker');
+  String get grantButton          => _t('Freigeben', 'Grant');
+  String get posterUnresolvedLabel => _t('— (öffnen zum Auflösen)', '— (open to resolve)');
+
+  // ── Nachricht senden (free message-first contact) ───────────────────────────
+  String get sendInterestButton   => _t('Nachricht senden', 'Send message');
+  String get interestSentButton   => _t('Nachricht gesendet', 'Message sent');
+  String get messageComposerSubtitle => _t(
+      'Ihre Nachricht geht anonym an das Unternehmen. Ihr Name wird erst sichtbar, wenn es Ihre Anfrage annimmt.',
+      'Your message is sent anonymously. Your name is revealed only once they accept your request.');
+  String get messageSentSnackbar => _t('Nachricht gesendet', 'Message sent');
+  String get messageSentTitle    => _t('Nachricht gesendet', 'Message sent');
+  String get messageSentBody     => _t(
+      'Das Unternehmen wurde benachrichtigt und meldet sich in Kürze. Den Status sehen Sie unter „Meine Anfragen".',
+      'The company has been notified and will get back to you shortly. You can track the status under "My requests".');
+  String get messageDeclinedTitle => _t('Anfrage abgelehnt', 'Request declined');
+  String get messageDeclinedBody  => _t(
+      'Das Unternehmen hat diese Anfrage leider abgelehnt. Schauen Sie sich weitere Kapazitäten im Feed an.',
+      'The company declined this request. Have a look at other capacity in the feed.');
+  String get interestModalSubtitle => _t(
+      'Mit einer Vermittlung schalten Sie Firma, Kontakt und Chat sofort frei.',
+      'One connection instantly unlocks the company, contact and chat.');
+  String get interestSummaryLabel => _t('Kapazität', 'Capacity');
+  String get interestMessageLabel => _t('Nachricht (optional)', 'Message (optional)');
+  String get interestMessageHint  => _t('Kurz zum Projekt – ohne Kontaktdaten', 'Briefly about the project – no contact details');
+  String get interestSendConfirm  => _t('Anfrage senden', 'Send request');
+  String get interestContainsContactWarning => _t(
+      'Bitte keine Telefonnummern oder E-Mail-Adressen – der Kontakt wird nach der Vermittlung automatisch freigegeben.',
+      'Please don\'t include phone numbers or emails – contact is shared automatically after the connection.');
+
+  // ── Vermittlungen (credit-based instant reveal) ─────────────────────────────
+  String vermittlungRemaining(int x, int y) =>
+      _t('Verbleibende Vermittlungen: $x von $y', 'Connections left: $x of $y');
+  String get vermittlungConfirmSubtitle => _t(
+      'Nach dem Einsatz einer Vermittlung wird die Anzeige sofort freigeschaltet.',
+      'Using one connection unlocks this post instantly.');
+  String get vermittlungUnlocksTitle => _t('Sie erhalten sofort Zugriff auf:', 'You instantly unlock:');
+  String get unlockCompanyName => _t('Firmenname', 'Company name');
+  String get unlockContact     => _t('Telefon & E-Mail', 'Phone & email');
+  String get unlockChat        => _t('Direktnachrichten', 'Direct messages');
+  String get vermittlungSpendButton => _t('Vermittlung einsetzen', 'Use a connection');
+  String get vermittlungNoneLeft => _t('Diesen Monat keine Vermittlungen mehr übrig.', 'No connections left this month.');
+  String get vermittlungStaleNotice => _t(
+      'Diese Anzeige ist über 30 Tage alt – zum Schutz Ihrer Vermittlung gesperrt.',
+      'This post is over 30 days old — locked to protect your connection.');
+  String get vermittlungUnlockedTitle => _t('Freigeschaltet', 'Unlocked');
+  String get vermittlungUnlockedSubtitle =>
+      _t('Sie können jetzt direkt Kontakt aufnehmen.', 'You can now get in touch directly.');
+  String get ownPostTitle => _t('Ihre eigene Anzeige', 'Your own post');
+  String get ownPostBody => _t(
+      'Das ist Ihre eigene Kapazität – eine Vermittlung ist hier nicht nötig.',
+      'This is your own capacity — no connection needed here.');
+  String get vermittlungPendingReviewTitle => _t('In Prüfung', 'Under review');
+  String get vermittlungPendingReviewBody => _t(
+      'Ihr Unternehmen wird verifiziert. Sobald das erledigt ist, wird die Vermittlung automatisch freigeschaltet.',
+      'We\'re verifying your company. Once done, this connection unlocks automatically.');
+  String get vermittlungSentSnackbar => _t('Freigeschaltet', 'Unlocked');
+  String get vermittlungPendingSnackbar => _t('Anfrage in Prüfung', 'Request under review');
+  // Sidebar + inbox
+  String creditsPill(int x) => _t('$x Vermittlungen', '$x connections');
+  String get receivedVermittlungenTitle => _t('Vermittlungen', 'Connections');
+  String get receivedVermittlungenNav => _t('Vermittlungen', 'Connections');
+  String nameChangeCooldownError(int days) => _t(
+      'Der Firmenname kann nur alle $days Tage geändert werden.',
+      'The company name can only be changed every $days days.');
+  String get websiteOptionalLabel => _t('Website (optional)', 'Website (optional)');
+  String get netzwerkGroupLabel => _t('Mein Netzwerk', 'My network');
+  String get navAnzeigen => _t('Anzeigen', 'Listings');
+  String get navAnfragen => _t('Anfragen', 'Requests');
+  String get navKontakte => _t('Kontakte', 'Contacts');
+  String get noVermittlungenYet => _t('Noch keine Vermittlungen zu Ihren Anzeigen', 'No connections to your posts yet');
+  String receivedUnlockedFrom(String city) => city.isEmpty
+      ? _t('Ein Unternehmen hat Ihre Anzeige freigeschaltet', 'A company unlocked your post')
+      : _t('Ein Unternehmen aus $city hat Ihre Anzeige freigeschaltet', 'A company from $city unlocked your post');
+  // Follow-up
+  String get outcomeOpenLabel => _t('Noch offen', 'Still open');
+  // One-word outcome answers for the compact tiles ("Hat's geklappt?" → Ja/Offen/Nein).
+  String get outcomeYesShort  => _t('Ja', 'Yes');
+  String get outcomeOpenShort => _t('Offen', 'Open');
+  String get outcomeNoShort   => _t('Nein', 'No');
+  // Admin
+  String get approveGrantButton => _t('Freigeben & vermitteln', 'Approve & connect');
+
+  // ── Trust block (detail, no identity) ───────────────────────────────────────
+  String get trustBlockTitle      => _t('Vertrauen', 'Trust');
+  String get trustVerifiedCompany => _t('Verifiziertes Unternehmen', 'Verified company');
+  String get trustUnverifiedCompany => _t('Noch nicht verifiziert', 'Not yet verified');
+  String trustRatingSummary(String avg, int count) =>
+      _t('$avg · $count Bewertungen', '$avg · $count reviews');
+  String get trustNoRatingsYet    => _t('Noch keine Bewertungen', 'No reviews yet');
+  String get trustIdentityHiddenNote => _t(
+      'Der Firmenname ist ausgeblendet. Mit einer Vermittlung schalten Sie Firma, Kontakt und Chat sofort frei.',
+      'The company name is hidden. One connection instantly unlocks the company, contact and chat.');
+
+  // ── Erhaltene Anfragen (poster inbox) ───────────────────────────────────────
+  String get receivedRequestsTitle => _t('Erhaltene Anfragen', 'Received requests');
+  String get receivedRequestsNavLabel => _t('Erhaltene Anfragen', 'Received requests');
+  String get noReceivedRequestsText => _t('Noch keine Anfragen zu Ihren Anzeigen', 'No requests for your posts yet');
+  String receivedRequestFrom(String city) => city.isEmpty
+      ? _t('Ein Bauunternehmen', 'A construction company')
+      : _t('Ein Bauunternehmen aus $city', 'A construction company from $city');
+  String receivedRequestVerifiedFrom(String city) => city.isEmpty
+      ? _t('Ein verifiziertes Bauunternehmen', 'A verified construction company')
+      : _t('Ein verifiziertes Bauunternehmen aus $city', 'A verified construction company from $city');
+  String get receivedRequestForPostLabel => _t('Zu Ihrer Anzeige', 'For your post');
+  String get receivedRequestMessageLabel => _t('Nachricht', 'Message');
+  String get acceptRequestButton  => _t('Akzeptieren', 'Accept');
+  String get declineRequestButton => _t('Ablehnen', 'Decline');
+  String get requestAcceptedSnackbar => _t('Angenommen — Kontakt freigegeben', 'Accepted — contact shared');
+  String get requestDeclinedSnackbar => _t('Anfrage abgelehnt', 'Request declined');
+  String get requestContactRevealedTitle => _t('Kontakt freigegeben', 'Contact shared');
+  String get receivedStatusPendingLabel => _t('Wartet auf Ihre Antwort', 'Awaiting your response');
+  String get receivedStatusGrantedLabel => _t('Angenommen', 'Accepted');
+  String get receivedStatusDeclinedLabel => _t('Abgelehnt', 'Declined');
+
+  // ── In-app messaging ────────────────────────────────────────────────────────
+  String get messagesInboxTitle   => _t('Nachrichten', 'Messages');
+  String get messagesNavLabel     => _t('Nachrichten', 'Messages');
+  String get sendMessageButton    => _t('Nachricht senden', 'Send message');
+  String get openChatButton       => _t('Chat öffnen', 'Open chat');
+  String get messageHint          => _t('Nachricht schreiben …', 'Write a message …');
+  String get noMessagesYet        => _t('Noch keine Nachrichten – schreiben Sie die erste.', 'No messages yet — send the first one.');
+  String get noMessagesYetShort   => _t('Noch keine Nachrichten', 'No messages yet');
+  String get noChatsYet           => _t('Noch keine Unterhaltungen. Nach einer angenommenen Anfrage können Sie hier chatten.', 'No conversations yet. Once a request is accepted you can chat here.');
+  String get chatFallbackTitle    => _t('Unternehmen', 'Company');
+  String get typingLabel          => _t('tippt …', 'typing …');
+  String get seenReceipt          => _t('Gelesen', 'Seen');
+  String get deliveredReceipt     => _t('Zugestellt', 'Delivered');
+  String get dateTodayLabel       => _t('Heute', 'Today');
+  String get dateYesterdayLabel   => _t('Gestern', 'Yesterday');
+  String get messageBlockedSnackbar => _t('Nachricht enthält unzulässige Sprache und wurde nicht gesendet.', 'Message contains disallowed language and was not sent.');
+
+  // ── Admin one-off legacy migration ──────────────────────────────────────────
+  String get migrateLegacyTooltip => _t('Alt-Anzeigen migrieren', 'Migrate legacy posts');
+  String get migrateLegacyTitle   => _t('Alt-Anzeigen migrieren', 'Migrate legacy posts');
+  String get migrateLegacyConfirm => _t(
+      'Entfernt Firmenname/Telefon/E-Mail aus allen alten öffentlichen Anzeigen, legt die geschützten Kontakt-Datensätze an, ergänzt Vertrauenssignale und vereinheitlicht alte Gewerke. Einmalig und wiederholbar (bereits migrierte werden übersprungen).',
+      'Removes company name/phone/email from all old public posts, creates the locked contact records, backfills trust signals, and normalizes legacy trades. One-off and safe to re-run (already-migrated posts are skipped).');
+  String get migrateLegacyRun     => _t('Migration starten', 'Run migration');
+  String migrateLegacyResult(int migrated, int skipped, int failed) => _t(
+      'Migriert: $migrated · übersprungen: $skipped · Fehler: $failed',
+      'Migrated: $migrated · skipped: $skipped · failed: $failed');
+
+  // ── Admin extensions (pre-screening + repeat signal) ────────────────────────
+  String get approveForPosterButton => _t('Für Anbieter freigeben', 'Release to provider');
+  String postsFromCompany(int n) => _t(
+      '$n ${n == 1 ? 'Anzeige' : 'Anzeigen'} dieser Firma',
+      '$n ${n == 1 ? 'post' : 'posts'} by this company');
+  String get requesterMessageLabel => _t('Nachricht des Anfragenden', 'Requester\'s message');
 }
 
 class _AppLocalizationsDelegate

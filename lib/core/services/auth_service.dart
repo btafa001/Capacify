@@ -19,12 +19,15 @@ class AuthService {
     required String lastName,
     // Company fields
     String companyName = '',
-    String trade = '',
-    String city = '',
+    List<String> trades = const [],
+    String address = '',
+    String city = 'Hamburg',
+    String postalCode = '',
     String phone = '',
     String website = '',
     String companyEmail = '',
     String vatNumber = '',
+    String employees = '1-5',
   }) async {
     try {
       final credential =
@@ -42,6 +45,8 @@ class AuthService {
         'email': email,
         'firstName': firstName,
         'lastName': lastName,
+        // Tier flag for the gated-contact model — dormant; default free.
+        'plan': 'free',
         'createdAt': FieldValue.serverTimestamp(),
       });
 
@@ -54,7 +59,7 @@ class AuthService {
           'ownerId': credential.user!.uid,
           'administrators': [credential.user!.uid],
           'name': companyName,
-          'trade': trade,
+          'trades': trades,
           'city': city,
           'phone': phone,
           'website': website,
@@ -62,14 +67,17 @@ class AuthService {
               ? companyEmail
               : email,
           'description': '',
-          'address': '',
-          'postalCode': '',
+          'address': address,
+          'postalCode': postalCode,
           'country': 'Deutschland',
-          'employees': '1-5',
+          'employees': employees,
           'services': [],
           'logoUrl': '',
           'vatNumber': vatNumber,
           'verificationStatus': vatNumber.isNotEmpty ? 'pending' : 'none',
+          'ratingSum': 0,
+          'ratingCount': 0,
+          'contentFlagged': false,
           'createdAt': FieldValue.serverTimestamp(),
         });
       }
@@ -122,9 +130,68 @@ class AuthService {
         'email': user.email ?? '',
         'firstName': parts.isNotEmpty ? parts.first : '',
         'lastName': parts.length > 1 ? parts.sublist(1).join(' ') : '',
+        'plan': 'free',
         'createdAt': FieldValue.serverTimestamp(),
       });
     }
+    touchLastActive(user.uid);
+  }
+
+  Future<Map<String, dynamic>?> getUserProfile(String uid) async {
+    final doc = await _firestore.collection('users').doc(uid).get();
+    return doc.data();
+  }
+
+  Future<void> updateUserProfile({
+    required String uid,
+    required String firstName,
+    required String lastName,
+    required String phone,
+    required String jobTitle,
+  }) async {
+    await _firestore.collection('users').doc(uid).set({
+      'firstName': firstName,
+      'lastName': lastName,
+      'phone': phone,
+      'jobTitle': jobTitle,
+    }, SetOptions(merge: true));
+  }
+
+  /// Whether the user wants an email when they receive a new contact request
+  /// (poster inbox). Defaults ON when unset. The preference is stored here; the
+  /// actual send is done by the mail backend (see docs/notifications) which
+  /// reads this flag before emailing — the client can't email the poster
+  /// directly (poster identity is server-hidden by design).
+  Future<bool> getEmailNotifications(String uid) async {
+    final doc = await _firestore.collection('users').doc(uid).get();
+    return (doc.data()?['notifyByEmail'] as bool?) ?? true;
+  }
+
+  Future<void> setEmailNotifications({
+    required String uid,
+    required bool enabled,
+  }) async {
+    await _firestore
+        .collection('users')
+        .doc(uid)
+        .set({'notifyByEmail': enabled}, SetOptions(merge: true));
+  }
+
+  /// Gates the onNewMessage Cloud Function's push + email for this user
+  /// (defaults to true — opt-out, matching notifyByEmail above).
+  Future<bool> getNotifyOnNewMessage(String uid) async {
+    final doc = await _firestore.collection('users').doc(uid).get();
+    return (doc.data()?['notifyOnNewMessage'] as bool?) ?? true;
+  }
+
+  Future<void> setNotifyOnNewMessage({
+    required String uid,
+    required bool enabled,
+  }) async {
+    await _firestore
+        .collection('users')
+        .doc(uid)
+        .set({'notifyOnNewMessage': enabled}, SetOptions(merge: true));
   }
 
   Future<UserCredential> loginWithEmail({
@@ -132,18 +199,53 @@ class AuthService {
     required String password,
   }) async {
     try {
-      return await _auth.signInWithEmailAndPassword(
+      final cred = await _auth.signInWithEmailAndPassword(
         email: email,
         password: password,
       );
+      touchLastActive(cred.user!.uid);
+      return cred;
     } on FirebaseAuthException catch (e) {
       throw _handleAuthException(e);
     }
   }
 
-  Future<void> sendPasswordResetEmail(String email) async {
+  /// Stamps the company's `lastActiveAt` on login — a liveness/trust signal
+  /// ("Zuletzt aktiv heute") shown on company profiles. Best-effort: a user
+  /// without a company doc (or an offline blip) is silently ignored.
+  void touchLastActive(String uid) {
+    _firestore
+        .collection('companies')
+        .doc(uid)
+        .update({'lastActiveAt': FieldValue.serverTimestamp()})
+        .catchError((_) {});
+  }
+
+  /// Sends Firebase's password-reset email. This doubles as the admin-assisted
+  /// onboarding "set your password" invite (see AdminOnboardingService).
+  ///
+  /// [languageCode] localizes the email Firebase sends (the built-in template
+  /// respects the account language) — pass 'de' for German firms so the invite
+  /// doesn't arrive in English. [continueUrl], when given, adds a "Continue"
+  /// button that returns the user to the app after they set their password
+  /// instead of leaving them on Firebase's bare confirmation page. The email's
+  /// subject/body/sender and its deliverability (spam) are configured in the
+  /// Firebase Console (Auth → Templates), NOT here.
+  Future<void> sendPasswordResetEmail(
+    String email, {
+    String? languageCode,
+    String? continueUrl,
+  }) async {
     try {
-      await _auth.sendPasswordResetEmail(email: email);
+      if (languageCode != null) {
+        await _auth.setLanguageCode(languageCode);
+      }
+      await _auth.sendPasswordResetEmail(
+        email: email,
+        actionCodeSettings: continueUrl == null
+            ? null
+            : ActionCodeSettings(url: continueUrl, handleCodeInApp: false),
+      );
     } on FirebaseAuthException catch (e) {
       throw _handleAuthException(e);
     }
@@ -189,6 +291,18 @@ class AuthService {
         return 'Zu viele Versuche. Bitte später erneut versuchen.';
       case 'invalid-credential':
         return 'E-Mail oder Passwort ist falsch.';
+      // Social sign-in (Google/Apple) — surface the real cause so config issues
+      // are diagnosable instead of a generic error.
+      case 'operation-not-allowed':
+        return 'Diese Anmeldeart ist nicht aktiviert. (Google in der Firebase-Konsole freischalten.)';
+      case 'unauthorized-domain':
+        return 'Diese Domain ist nicht für die Anmeldung freigegeben. (In Firebase Auth → Authorized domains hinzufügen.)';
+      case 'popup-blocked':
+        return 'Das Anmeldefenster wurde vom Browser blockiert. Bitte Popups für diese Seite erlauben.';
+      case 'account-exists-with-different-credential':
+        return 'Zu dieser E-Mail existiert bereits ein Konto mit einer anderen Anmeldeart.';
+      case 'network-request-failed':
+        return 'Netzwerkfehler. Bitte prüfen Sie Ihre Verbindung und versuchen Sie es erneut.';
       default:
         return 'Ein Fehler ist aufgetreten. Bitte erneut versuchen.';
     }

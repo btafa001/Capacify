@@ -21,6 +21,16 @@ class CompanyService {
         .update(company.toFirestoreForUpdate());
   }
 
+  /// Toggle the retention-email opt-in (match alerts + weekly digest). A single
+  /// owner-writable field, kept out of the full profile-save path so it can't
+  /// be clobbered by a stale model.
+  Future<void> setEmailOptIn(String companyId, bool value) async {
+    await _firestore
+        .collection('companies')
+        .doc(companyId)
+        .update({'emailOptIn': value});
+  }
+
   // Get company by owner ID
   Future<CompanyModel?> getCompanyByOwner(String ownerId) async {
     final query = await _firestore
@@ -63,7 +73,7 @@ class CompanyService {
     Query query = _firestore.collection('companies');
 
     if (trade != null && trade.isNotEmpty) {
-      query = query.where('trade', isEqualTo: trade);
+      query = query.where('trades', arrayContains: trade);
     }
     if (city != null && city.isNotEmpty) {
       query = query.where('city', isEqualTo: city);
@@ -78,12 +88,20 @@ class CompanyService {
 
   // ─── RATINGS ───
 
-  /// Creates or updates the rater's rating for a company. Never counts
-  /// toward the company's average directly — every submission goes to
-  /// 'pending' and only counts once an admin approves it (see AdminService).
-  /// If the rater is editing a rating that was already approved, its old
-  /// value is removed from the aggregate now, since the edited content
-  /// needs fresh review before it can count again.
+  /// Creates or updates the rater's rating for a company. The rater ONLY ever
+  /// writes their own companyRatings doc (in 'pending' state) — it never
+  /// touches the company's ratingSum/ratingCount aggregate. Those are
+  /// admin-only and are recomputed from the approved reviews on the next
+  /// moderation action (see AdminService._recomputeRatingAggregate). This is
+  /// what makes the score tamper-proof: a client physically cannot write the
+  /// aggregate (firestore.rules pins ratingSum/ratingCount for every
+  /// non-admin writer), so scores can't be forged for self or competitors.
+  ///
+  /// Editing an already-approved rating drops it back to 'pending'; its old
+  /// contribution lingers in the denormalized number only until an admin next
+  /// moderates any rating for that company, at which point the aggregate is
+  /// recomputed exactly. That brief staleness is not exploitable (you still
+  /// can't manufacture an approved rating).
   Future<void> submitRating({
     required String companyId,
     required String raterUserId,
@@ -93,38 +111,38 @@ class CompanyService {
   }) async {
     final ratingRef =
         _firestore.collection('companyRatings').doc('${raterUserId}_$companyId');
-    final companyRef = _firestore.collection('companies').doc(companyId);
 
-    await _firestore.runTransaction((tx) async {
-      final existingSnap = await tx.get(ratingRef);
-      final companySnap = await tx.get(companyRef);
-      final companyData = companySnap.data() ?? {};
-      final ratedCompanyName = companyData['name'] ?? '';
+    final existingSnap = await ratingRef.get();
+    final companySnap =
+        await _firestore.collection('companies').doc(companyId).get();
+    final ratedCompanyName = companySnap.data()?['name'] ?? '';
 
-      if (existingSnap.exists && existingSnap.data()?['status'] == 'approved') {
-        final oldRating = (existingSnap.data()?['rating'] ?? 0) as int;
-        final currentSum = (companyData['ratingSum'] ?? 0) as int;
-        final currentCount = (companyData['ratingCount'] ?? 0) as int;
-        tx.update(companyRef, {
-          'ratingSum': currentSum - oldRating,
-          'ratingCount': currentCount - 1,
-        });
-      }
-
-      tx.set(ratingRef, {
-        'raterUserId': raterUserId,
-        'raterCompanyName': raterCompanyName,
-        'companyId': companyId,
-        'ratedCompanyName': ratedCompanyName,
-        'rating': rating,
-        'comment': comment,
-        'status': 'pending',
-        'createdAt': existingSnap.exists
-            ? (existingSnap.data()?['createdAt'])
-            : FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+    await ratingRef.set({
+      'raterUserId': raterUserId,
+      'raterCompanyName': raterCompanyName,
+      'companyId': companyId,
+      'ratedCompanyName': ratedCompanyName,
+      'rating': rating,
+      'comment': comment,
+      'status': 'pending',
+      'createdAt': existingSnap.exists
+          ? (existingSnap.data()?['createdAt'])
+          : FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
     });
+  }
+
+  /// Withdraws the rater's own rating. Only deletes the review doc — it does
+  /// NOT touch the company aggregate (which is admin-only and non-writable by
+  /// the client). If the withdrawn rating had been approved, the denormalized
+  /// score is corrected the next time an admin moderates a rating for that
+  /// company (recompute-from-approved). Admins deleting a rating should use
+  /// AdminService.deleteRatingAndRecompute so the aggregate updates at once.
+  Future<void> deleteRating({
+    required String ratingId,
+    required String companyId,
+  }) async {
+    await _firestore.collection('companyRatings').doc(ratingId).delete();
   }
 
   /// Public-facing reviews list — only approved ratings are ever shown.

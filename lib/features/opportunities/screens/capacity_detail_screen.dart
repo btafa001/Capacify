@@ -5,10 +5,44 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/models/capacity_model.dart';
+import '../../../core/models/capacity_owner_model.dart';
+import '../../../core/models/company_model.dart';
+import '../../../core/models/contact_request_model.dart';
 import '../../../core/services/capacity_provider.dart';
+import '../../../core/services/company_provider.dart';
 import '../../../core/services/auth_provider.dart';
+import '../../../core/services/contact_request_provider.dart';
 import '../../../core/localization/app_localizations.dart';
-import '../../../shared/widgets/star_rating.dart';
+import '../../../core/services/analytics_service.dart';
+import '../../company/screens/company_profile_screen.dart';
+import '../widgets/interest_modal.dart';
+
+/// Opens a capacity's details as a compact popup instead of pushing a
+/// full-screen route — used from My Listings and Favorites, where a quick
+/// glance back at the list afterwards matters more than full-screen detail.
+void showCapacityDetailDialog(BuildContext context, CapacityModel capacity) {
+  final size = MediaQuery.of(context).size;
+  showGeneralDialog(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: 'Close',
+    barrierColor: Colors.black.withOpacity(0.75),
+    transitionDuration: const Duration(milliseconds: 220),
+    transitionBuilder: (ctx, anim, _, child) => ScaleTransition(
+      scale: Tween<double>(begin: 0.96, end: 1.0).animate(CurvedAnimation(parent: anim, curve: Curves.easeOut)),
+      child: FadeTransition(opacity: anim, child: child),
+    ),
+    pageBuilder: (ctx, _, __) => Align(
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: size.width < 600 ? 0 : 40, vertical: 24),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: size.width < 600 ? size.width : 560, maxHeight: size.height * 0.88),
+          child: ClipRRect(borderRadius: BorderRadius.circular(16), child: CapacityDetailScreen(capacity: capacity)),
+        ),
+      ),
+    ),
+  );
+}
 
 class CapacityDetailScreen extends ConsumerStatefulWidget {
   final CapacityModel capacity;
@@ -27,16 +61,36 @@ class _CapacityDetailScreenState
     extends ConsumerState<CapacityDetailScreen> {
   bool _isFavorited = false;
   bool _loadingFavorite = false;
+  CompanyModel? _viewerCompany;
+  // The locked identity sidecar — non-null ONLY if Firestore released it to
+  // this viewer (owner, admin, or granted requester). null = anonymous.
+  CapacityOwnerModel? _ownerDoc;
 
   @override
   void initState() {
     super.initState();
+    AnalyticsService.logScreenView('CapacityDetail');
     _loadFavoriteState();
+    _loadViewerCompany();
+    _loadOwnerDoc();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref
           .read(capacityServiceProvider)
           .incrementViewCount(widget.capacity.id);
     });
+  }
+
+  Future<void> _loadOwnerDoc() async {
+    final owner =
+        await ref.read(capacityServiceProvider).getCapacityOwner(widget.capacity.id);
+    if (mounted) setState(() => _ownerDoc = owner);
+  }
+
+  Future<void> _loadViewerCompany() async {
+    final user = ref.read(authStateProvider).value;
+    if (user == null) return;
+    final company = await ref.read(companyServiceProvider).getCompanyByOwner(user.uid);
+    if (mounted) setState(() => _viewerCompany = company);
   }
 
   Future<void> _loadFavoriteState() async {
@@ -71,13 +125,15 @@ class _CapacityDetailScreenState
 
   Future<void> _launchPhone() async {
     final l = AppLocalizations.of(context);
-    if (widget.capacity.companyPhone.isEmpty) {
+    final phone = _ownerDoc?.contactPhone ?? '';
+    if (phone.isEmpty) {
       _showSnackbar(l.noPhoneSnackbar, AppColors.error);
       return;
     }
-    final url = Uri.parse('tel:${widget.capacity.companyPhone}');
+    final url = Uri.parse('tel:$phone');
     try {
       await launchUrl(url);
+      AnalyticsService.logEvent('capacity_contact_click', parameters: {'method': 'phone', 'trade': widget.capacity.trade});
     } catch (_) {
       _showSnackbar(l.callFailedSnackbar, AppColors.error);
     }
@@ -85,16 +141,213 @@ class _CapacityDetailScreenState
 
   Future<void> _launchEmail() async {
     final l = AppLocalizations.of(context);
-    if (widget.capacity.companyEmail.isEmpty) {
+    final email = _ownerDoc?.contactEmail ?? '';
+    if (email.isEmpty) {
       _showSnackbar(l.noEmailSnackbar, AppColors.error);
       return;
     }
-    final url = Uri.parse('mailto:${widget.capacity.companyEmail}');
+    final url = Uri.parse('mailto:$email');
     try {
       await launchUrl(url);
+      AnalyticsService.logEvent('capacity_contact_click', parameters: {'method': 'email', 'trade': widget.capacity.trade});
     } catch (_) {
       _showSnackbar(l.mailAppError, AppColors.error);
     }
+  }
+
+  // ── The gated step — opens the "Interesse senden" confirmation modal. ──
+  Future<void> _requestContact() =>
+      showInterestModal(context: context, ref: ref, capacity: widget.capacity);
+
+  Future<void> _setOutcome(ContactRequestModel req, String outcome) async {
+    final l = AppLocalizations.of(context);
+    try {
+      await ref
+          .read(contactRequestServiceProvider)
+          .setOutcome(requestId: req.id, outcome: outcome);
+      if (mounted) _showSnackbar(l.thanksForFeedbackSnackbar, AppColors.live);
+    } catch (e) {
+      if (mounted) _showSnackbar(l.errorWithMessage(e), AppColors.error);
+    }
+  }
+
+  /// The entire contact area. States:
+  ///   owner / closed / cancelled → nothing (handled elsewhere / bottom bar).
+  ///   revealed (_ownerDoc released to owner, admin, or a granted requester) →
+  ///     the identity: company name + contact + optional outcome feedback.
+  ///   anonymous → the trust block (verification/rating/district/trade, NO
+  ///     name) plus the request status if one exists.
+  /// Identity only ever appears in the revealed branch, sourced from the
+  /// rule-released _ownerDoc — never from the public post. The primary
+  /// "Interesse senden" action lives in the sticky bottom bar.
+  Widget _buildContactGate(AppLocalizations l, bool isOwner) {
+    final capacity = widget.capacity;
+    if (isOwner || capacity.isClosed || capacity.isCancelled) {
+      return const SizedBox.shrink();
+    }
+    final c = AppColors.of(context);
+    final accent = capacity.type == CapacityType.offer
+        ? AppColors.offerColor
+        : AppColors.needColor;
+
+    // This viewer's request for this post (drives status + the granted reveal).
+    final viewerId = _viewerCompany?.id;
+    final req = viewerId == null
+        ? null
+        : ref
+            .watch(myRequestForPostProvider(
+                (requesterCompanyId: viewerId, postId: capacity.id)))
+            .valueOrNull;
+
+    // Once granted, fetch the now-readable owner doc so contact appears.
+    if (req?.status == 'granted' && _ownerDoc == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _loadOwnerDoc());
+    }
+
+    // ── Revealed — identity + contact (only reachable post-accept/admin). ──
+    if (_ownerDoc != null) {
+      final name = _ownerDoc!.companyName;
+      final phone = _ownerDoc!.contactPhone;
+      final email = _ownerDoc!.contactEmail;
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 20),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(l.requestContactRevealedTitle,
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900, color: c.textPrimary)),
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColors.live.withOpacity(0.06),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.live.withOpacity(0.35)),
+            ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              if (name.isNotEmpty) ...[
+                Row(children: [
+                  const Icon(Icons.business_outlined, size: 18, color: AppColors.live),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(name, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: c.textPrimary))),
+                ]),
+                const SizedBox(height: 12),
+              ],
+              if (phone.isNotEmpty)
+                _ContactRow(icon: Icons.phone_outlined, value: phone, label: l.phoneLabel, onTap: _launchPhone, onCopy: () => _copyToClipboard(phone, l.phoneLabel), color: accent),
+              if (phone.isNotEmpty && email.isNotEmpty) _Divider(),
+              if (email.isNotEmpty)
+                _ContactRow(icon: Icons.mail_outline, value: email, label: l.emailLabel, onTap: _launchEmail, onCopy: () => _copyToClipboard(email, l.emailLabel), color: accent),
+              if (phone.isEmpty && email.isEmpty && name.isEmpty)
+                Text(l.noContactInfoText, style: TextStyle(color: c.textSecondary, fontSize: 13)),
+            ]),
+          ),
+          if (req != null && req.outcome == null) ...[
+            const SizedBox(height: 14),
+            _buildOutcomePrompt(l, c, req),
+          ],
+        ]),
+      );
+    }
+
+    // ── Anonymous — trust signals (no identity) + request status. ──
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 20),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _buildTrustBlock(l, c),
+        if (req != null && req.status != 'granted') ...[
+          const SizedBox(height: 14),
+          _buildRequestStatus(l, c, req),
+        ],
+      ]),
+    );
+  }
+
+  /// Trust WITHOUT identity — verification, aggregate rating, district, and
+  /// trade/crew, all read from the public post. Builds confidence but names no
+  /// one; the company name is revealed only after the poster accepts (note).
+  Widget _buildTrustBlock(AppLocalizations l, dynamic c) {
+    final capacity = widget.capacity;
+    final ratingText = capacity.posterRatingCount > 0
+        ? l.trustRatingSummary(
+            capacity.posterRating.toStringAsFixed(1), capacity.posterRatingCount)
+        : l.trustNoRatingsYet;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: c.surface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: c.border),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(l.trustBlockTitle,
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: c.textPrimary)),
+        const SizedBox(height: 12),
+        _TrustRow(
+          icon: capacity.posterVerified ? Icons.verified_outlined : Icons.shield_outlined,
+          color: capacity.posterVerified ? AppColors.live : c.textTertiary,
+          label: capacity.posterVerified ? l.trustVerifiedCompany : l.trustUnverifiedCompany,
+          strong: capacity.posterVerified,
+        ),
+        const SizedBox(height: 10),
+        _TrustRow(icon: Icons.star_outline, color: AppColors.accent, label: ratingText),
+        const SizedBox(height: 10),
+        _TrustRow(icon: Icons.location_on_outlined, color: AppColors.distance, label: capacity.location),
+        const SizedBox(height: 10),
+        _TrustRow(
+            icon: Icons.build_outlined,
+            color: c.textSecondary,
+            label: '${l.tradeName(capacity.trade)} · ${capacity.workerCount} ${l.persons}'),
+        const SizedBox(height: 12),
+        Container(height: 1, color: c.border),
+        const SizedBox(height: 12),
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Icon(Icons.lock_outline, size: 14, color: c.textTertiary),
+          const SizedBox(width: 8),
+          Expanded(child: Text(l.trustIdentityHiddenNote,
+              style: TextStyle(fontSize: 12, color: c.textTertiary, height: 1.4))),
+        ]),
+      ]),
+    );
+  }
+
+  Widget _buildRequestStatus(AppLocalizations l, dynamic c, ContactRequestModel req) {
+    final isDeclined = req.status == 'declined';
+    final color = isDeclined ? AppColors.error : AppColors.primary;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Row(children: [
+        Icon(isDeclined ? Icons.cancel_outlined : Icons.schedule, size: 16, color: color),
+        const SizedBox(width: 8),
+        Expanded(child: Text(l.requestStatusLabel(req.status),
+            style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w700, height: 1.4))),
+      ]),
+    );
+  }
+
+  /// Optional "did it work out?" feedback, shown once contact is revealed.
+  Widget _buildOutcomePrompt(AppLocalizations l, dynamic c, ContactRequestModel req) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(l.didItWorkOutPrompt,
+          style: TextStyle(color: c.textPrimary, fontSize: 13, fontWeight: FontWeight.w800)),
+      const SizedBox(height: 8),
+      Row(children: [
+        Expanded(child: OutlinedButton(
+          onPressed: () => _setOutcome(req, 'matched'),
+          style: OutlinedButton.styleFrom(foregroundColor: AppColors.live, side: const BorderSide(color: AppColors.live)),
+          child: Text(l.outcomeMatchedLabel),
+        )),
+        const SizedBox(width: 10),
+        Expanded(child: OutlinedButton(
+          onPressed: () => _setOutcome(req, 'no_deal'),
+          style: OutlinedButton.styleFrom(foregroundColor: c.textSecondary, side: BorderSide(color: c.border)),
+          child: Text(l.outcomeNoDealLabel),
+        )),
+      ]),
+    ]);
   }
 
   void _copyToClipboard(String text, String label) {
@@ -146,8 +399,6 @@ class _CapacityDetailScreenState
         confirmLabel = l.cancelActionLabel;
         confirmColor = AppColors.error;
         break;
-      default:
-        return;
     }
 
     final c = AppColors.of(context);
@@ -222,11 +473,14 @@ class _CapacityDetailScreenState
         ? AppColors.offerColor
         : AppColors.needColor;
 
-    // Owner detection
+    // Owner detection — derived from the locked sidecar (the public post has
+    // no companyId). _ownerDoc is only readable by owner/admin/granted, so a
+    // matching posterCompanyId means "this is my own post."
     final currentUserId =
         FirebaseAuth.instance.currentUser?.uid;
     final isOwner = currentUserId != null &&
-        currentUserId == capacity.companyId;
+        _ownerDoc != null &&
+        _ownerDoc!.posterCompanyId == currentUserId;
 
     // Status color
     final statusColor = _resolveStatusColor(
@@ -335,19 +589,15 @@ class _CapacityDetailScreenState
 
                   const SizedBox(height: 6),
 
-                  Row(
-                    children: [
-                      Text(
-                        capacity.companyName,
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: c.textSecondary,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      CompanyRatingBadge(companyId: capacity.companyId, starSize: 14, fontSize: 13),
-                    ],
+                  // Anonymous — no company shown. Subtitle is the match
+                  // context (trade · district), never identity.
+                  Text(
+                    '${l.tradeName(capacity.trade)} · ${capacity.location}',
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: c.textSecondary,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
 
                   const SizedBox(height: 20),
@@ -473,85 +723,8 @@ class _CapacityDetailScreenState
 
                   const SizedBox(height: 20),
 
-                  // ── CONTACT (non-owner, active posts) ──
-                  if (!isOwner &&
-                      !capacity.isClosed &&
-                      !capacity.isCancelled) ...[
-                    Text(
-                      l.contactLabel,
-                      style: TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w900,
-                        color: c.textPrimary,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: c.surface,
-                        borderRadius:
-                            BorderRadius.circular(10),
-                        border: Border.all(
-                          color: c.border,
-                        ),
-                      ),
-                      child: Column(
-                        children: [
-                          if (capacity
-                              .companyPhone.isNotEmpty)
-                            _ContactRow(
-                              icon:
-                                  Icons.phone_outlined,
-                              value:
-                                  capacity.companyPhone,
-                              label: l.phoneLabel,
-                              onTap: _launchPhone,
-                              onCopy: () =>
-                                  _copyToClipboard(
-                                capacity.companyPhone,
-                                l.phoneLabel,
-                              ),
-                              color: accentColor,
-                            ),
-                          if (capacity
-                                  .companyPhone
-                                  .isNotEmpty &&
-                              capacity
-                                  .companyEmail.isNotEmpty)
-                            _Divider(),
-                          if (capacity
-                              .companyEmail.isNotEmpty)
-                            _ContactRow(
-                              icon: Icons.mail_outline,
-                              value:
-                                  capacity.companyEmail,
-                              label: l.emailLabel,
-                              onTap: _launchEmail,
-                              onCopy: () =>
-                                  _copyToClipboard(
-                                capacity.companyEmail,
-                                l.emailLabel,
-                              ),
-                              color: accentColor,
-                            ),
-                          if (capacity
-                                  .companyPhone
-                                  .isEmpty &&
-                              capacity
-                                  .companyEmail.isEmpty)
-                            Text(
-                              l.noContactInfoText,
-                              style: TextStyle(
-                                color: c.textSecondary,
-                                fontSize: 13,
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                  ],
+                  // ── CONTACT — gated behind a request ──
+                  _buildContactGate(l, isOwner),
 
                   // ── CLOSED INFO ──
                   if (capacity.isClosed) ...[
@@ -671,7 +844,11 @@ class _CapacityDetailScreenState
             accentColor: accentColor,
             onPhone: _launchPhone,
             onEmail: _launchEmail,
+            onSendInterest: _requestContact,
+            contactGranted: _ownerDoc != null,
             onUpdateStatus: _updateStatus,
+            viewerProfileComplete: _viewerCompany?.isProfileComplete ?? false,
+            onProfileUpdated: _loadViewerCompany,
           ),
         ],
       ),
@@ -705,7 +882,11 @@ class _BottomActions extends StatelessWidget {
   final Color accentColor;
   final VoidCallback onPhone;
   final VoidCallback onEmail;
+  final VoidCallback onSendInterest;
+  final bool contactGranted;
   final Function(CapacityStatus) onUpdateStatus;
+  final bool viewerProfileComplete;
+  final VoidCallback onProfileUpdated;
 
   const _BottomActions({
     required this.capacity,
@@ -713,7 +894,11 @@ class _BottomActions extends StatelessWidget {
     required this.accentColor,
     required this.onPhone,
     required this.onEmail,
+    required this.onSendInterest,
+    required this.contactGranted,
     required this.onUpdateStatus,
+    required this.viewerProfileComplete,
+    required this.onProfileUpdated,
   });
 
   @override
@@ -886,57 +1071,149 @@ class _BottomActions extends StatelessWidget {
           ),
         ),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(
-            child: ElevatedButton.icon(
-              onPressed: onPhone,
-              icon: const Icon(
-                Icons.phone_outlined,
-                size: 18,
+          // Price-proposal tip only makes sense once you're connected.
+          if (viewerProfileComplete && contactGranted)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.info_outline,
+                    size: 14,
+                    color: c.textTertiary,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      l.priceProposalTip,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: c.textTertiary,
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              label: Text(
-                l.callButton,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
+            ),
+          // Granted → the released contact (call / e-mail). Pre-grant, the only
+          // action is a single "Interesse senden" (no direct contact exposed).
+          if (viewerProfileComplete && contactGranted)
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: onPhone,
+                    icon: const Icon(
+                      Icons.phone_outlined,
+                      size: 18,
+                    ),
+                    label: Text(
+                      l.callButton,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: accentColor,
+                      minimumSize:
+                          const Size(double.infinity, 48),
+                      elevation: 4,
+                      shadowColor:
+                          accentColor.withOpacity(0.3),
+                    ),
+                  ),
                 ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: onEmail,
+                    icon: Icon(
+                      Icons.mail_outline,
+                      size: 18,
+                      color: accentColor,
+                    ),
+                    label: Text(
+                      l.emailLabel,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: accentColor,
+                      ),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      side: BorderSide(
+                        color: accentColor,
+                        width: 1.5,
+                      ),
+                      minimumSize:
+                          const Size(double.infinity, 48),
+                    ),
+                  ),
+                ),
+              ],
+            )
+          else if (viewerProfileComplete)
+            ElevatedButton.icon(
+              onPressed: onSendInterest,
+              icon: const Icon(Icons.handshake_outlined, size: 18),
+              label: Text(
+                l.sendInterestButton,
+                style: const TextStyle(fontWeight: FontWeight.w800),
               ),
               style: ElevatedButton.styleFrom(
                 backgroundColor: accentColor,
-                minimumSize:
-                    const Size(double.infinity, 48),
+                minimumSize: const Size(double.infinity, 50),
                 elevation: 4,
-                shadowColor:
-                    accentColor.withOpacity(0.3),
+                shadowColor: accentColor.withOpacity(0.3),
               ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: OutlinedButton.icon(
-              onPressed: onEmail,
-              icon: Icon(
-                Icons.mail_outline,
-                size: 18,
-                color: accentColor,
-              ),
-              label: Text(
-                l.emailLabel,
-                style: TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: accentColor,
+            )
+          else
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppColors.primary.withOpacity(0.25)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.lock_outline, size: 16, color: AppColors.primary),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          l.contactGateMessage,
+                          style: const TextStyle(fontSize: 12, color: AppColors.primary),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              style: OutlinedButton.styleFrom(
-                side: BorderSide(
-                  color: accentColor,
-                  width: 1.5,
+                const SizedBox(height: 10),
+                ElevatedButton(
+                  onPressed: () async {
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const CompanyProfileScreen()),
+                    );
+                    onProfileUpdated();
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: accentColor,
+                    minimumSize: const Size(double.infinity, 48),
+                  ),
+                  child: Text(
+                    l.contactGateButton,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
                 ),
-                minimumSize:
-                    const Size(double.infinity, 48),
-              ),
+              ],
             ),
-          ),
         ],
       ),
     );
@@ -946,6 +1223,44 @@ class _BottomActions extends StatelessWidget {
 // ─────────────────────────────────────────────────────
 //  HELPER WIDGETS
 // ─────────────────────────────────────────────────────
+
+/// A single line in the anonymous trust block: icon + label. Never carries
+/// identity — only aggregate signals (verification, rating, district, trade).
+class _TrustRow extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final String label;
+  final bool strong;
+
+  const _TrustRow({
+    required this.icon,
+    required this.color,
+    required this.label,
+    this.strong = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    return Row(
+      children: [
+        Icon(icon, size: 17, color: color),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 13.5,
+              height: 1.3,
+              color: strong ? c.textPrimary : c.textSecondary,
+              fontWeight: strong ? FontWeight.w800 : FontWeight.w600,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
 
 class _Divider extends StatelessWidget {
   @override

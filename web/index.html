@@ -1,6 +1,19 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <!-- Canonical domain is capacify.de — bounce any visitor who lands on a
+       default Firebase Hosting domain there, before anything else loads.
+       Firebase Hosting always keeps .web.app/.firebaseapp.com active (there is
+       no way to disable them), so this is a client-side redirect, not a
+       server-level block. -->
+  <script>
+    (function () {
+      var h = window.location.hostname;
+      if (h === 'capacify-mvp.web.app' || h === 'capacify-mvp.firebaseapp.com') {
+        window.location.replace('https://capacify.de' + window.location.pathname + window.location.search + window.location.hash);
+      }
+    })();
+  </script>
   <!--
     If you are serving your web app in a path other than the root, change the
     href value below to reflect the base path you are serving from.
@@ -18,21 +31,109 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="Capacify verbindet Bauunternehmen und Nachunternehmer in Echtzeit.">
+
+  <!-- Open Graph / Twitter Card — read by LinkedIn, WhatsApp, Facebook, Slack,
+       etc. when a link is shared. These crawlers don't execute JavaScript, so
+       this metadata has to live in the static HTML rather than being set from
+       Dart — it's necessarily generic (site-wide), not per-post. -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Capacify">
+  <meta property="og:title" content="Capacify – Live Kapazitätsbörse">
+  <meta property="og:description" content="Capacify verbindet Bauunternehmen und Nachunternehmer in Echtzeit.">
+  <meta property="og:image" content="https://capacify.de/icons/Icon-512.png">
+  <meta property="og:url" content="https://capacify.de/">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Capacify – Live Kapazitätsbörse">
+  <meta name="twitter:description" content="Capacify verbindet Bauunternehmen und Nachunternehmer in Echtzeit.">
+  <meta name="twitter:image" content="https://capacify.de/icons/Icon-512.png">
+
+  <meta name="theme-color" content="#FF6B00">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="capacify">
+  <meta name="apple-mobile-web-app-title" content="Capacify">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>capacify</title>
+  <title>Capacify – Live Kapazitätsbörse für Bauunternehmen in Hamburg</title>
+  <link rel="canonical" href="https://capacify.de/">
   <link rel="manifest" href="manifest.json">
+
+  <!-- Organization structured data — helps search engines and rich results
+       understand the brand. JSON-LD is read from static HTML (no JS needed). -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "name": "Capacify",
+    "url": "https://capacify.de/",
+    "logo": "https://capacify.de/icons/Icon-512.png",
+    "description": "Capacify ist die anonyme Live-Kapazitätsbörse für Bauunternehmen und Nachunternehmer in Hamburg. Freie Kapazitäten und kurzfristigen Bedarf diskret vermitteln.",
+    "areaServed": "Hamburg, Deutschland"
+  }
+  </script>
+
+  <!-- Branded first-paint splash. Flutter is a CanvasKit/WASM app: several MB
+       download and boot before the first frame, which would otherwise show a
+       blank white screen. This static splash paints instantly and fades out on
+       the 'flutter-first-frame' event. -->
+  <style>
+    #capacify-splash {
+      position: fixed; inset: 0; z-index: 9999;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #F5F6FA; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      transition: opacity .4s ease;
+    }
+    @media (prefers-color-scheme: dark) { #capacify-splash { background: #0A0E27; } }
+    #capacify-splash .cap-mark {
+      font-size: 34px; font-weight: 900; letter-spacing: -1px; color: #1A1A2E;
+    }
+    @media (prefers-color-scheme: dark) { #capacify-splash .cap-mark { color: #FFFFFF; } }
+    #capacify-splash .cap-dot { color: #FF6B00; }
+    #capacify-splash .cap-sub { margin-top: 6px; font-size: 13px; color: #888899; }
+    #capacify-splash .cap-bar {
+      margin-top: 22px; width: 132px; height: 3px; border-radius: 3px;
+      background: rgba(255,107,0,.18); overflow: hidden;
+    }
+    #capacify-splash .cap-bar > i {
+      display: block; width: 40%; height: 100%; border-radius: 3px; background: #FF6B00;
+      animation: cap-slide 1.1s ease-in-out infinite;
+    }
+    @keyframes cap-slide { 0% { transform: translateX(-120%);} 100% { transform: translateX(320%);} }
+  </style>
 </head>
 <body>
+  <div id="capacify-splash">
+    <div class="cap-mark">Capacify<span class="cap-dot">.</span></div>
+    <div class="cap-sub">Live-Kapazitätsbörse · Hamburg</div>
+    <div class="cap-bar"><i></i></div>
+  </div>
+  <script>
+    window.addEventListener('flutter-first-frame', function () {
+      var s = document.getElementById('capacify-splash');
+      if (s) { s.style.opacity = '0'; setTimeout(function () { s.remove(); }, 450); }
+    });
+  </script>
+  <!-- SEO / no-JS fallback: Flutter renders to canvas, so crawlers and users
+       with JavaScript disabled see nothing without this. Real, indexable copy
+       describing the product. Replaced by the Flutter app once it boots. -->
+  <noscript>
+    <div style="max-width:720px;margin:64px auto;padding:0 24px;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.6;color:#1a1a2e">
+      <h1>Capacify – Live-Kapazitätsbörse für den Bau in Hamburg</h1>
+      <p>Capacify verbindet Bauunternehmen und Nachunternehmer in Echtzeit. Firmen mit freien Kapazitäten und Firmen mit kurzfristigem Bedarf finden sich – anonym, diskret und ohne Ausschreibung.</p>
+      <h2>So funktioniert es</h2>
+      <ul>
+        <li><strong>Anonym entdecken:</strong> Anzeigen enthalten Gewerk, Ort und Verfügbarkeit – keine Firmennamen.</li>
+        <li><strong>Vermittlung einsetzen:</strong> Bei Interesse geben Sie den Kontakt frei.</li>
+        <li><strong>Sofort verbinden:</strong> Direkter Draht per Telefon oder Chat.</li>
+      </ul>
+      <p>Für die Nutzung ist JavaScript erforderlich. Bitte aktivieren Sie JavaScript, um die App zu laden.</p>
+    </div>
+  </noscript>
   <!--
     You can customize the "flutter_bootstrap.js" script.
     This is useful to provide a custom configuration to the Flutter loader

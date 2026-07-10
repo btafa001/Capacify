@@ -1,0 +1,26 @@
+rules_version = '2';
+
+// Cloud Storage for Firebase — LOCKED.
+//
+// The app does not use Storage (no firebase_storage dependency, no uploads or
+// downloads). Firebase auto-provisioned this bucket with default rules that
+// carry an expiry date, which is what triggers the "client access expiring"
+// email. These permanent rules deny all client access, so nothing can read or
+// write the bucket and the expiry warning goes away.
+//
+// When Storage is actually used later (e.g. company logo uploads), replace the
+// deny-all below with scoped rules, for example:
+//   match /company_logos/{companyId}/{fileName} {
+//     allow read: if true;                                  // logos shown publicly
+//     allow write: if request.auth != null                  // owner-only upload
+//       && request.auth.uid == companyId
+//       && request.resource.size < 2 * 1024 * 1024          // 2 MB cap
+//       && request.resource.contentType.matches('image/.*');
+//   }
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

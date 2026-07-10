@@ -5,7 +5,12 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/services/auth_provider.dart';
 import '../../../core/services/company_provider.dart';
 import '../../../core/services/capacity_provider.dart';
+import '../../../core/services/contact_request_provider.dart';
+import '../../../core/services/chat_provider.dart';
+import '../../../core/services/credit_provider.dart';
+import '../../../core/services/fcm_provider.dart';
 import '../../../core/models/capacity_model.dart';
+import '../../../core/models/company_model.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../shared/widgets/language_switcher.dart';
 import '../../company/screens/company_profile_screen.dart';
@@ -13,6 +18,10 @@ import '../../company/screens/company_directory_screen.dart';
 import '../../opportunities/screens/live_capacity_feed_screen.dart';
 import '../../opportunities/screens/create_capacity_screen.dart';
 import '../../opportunities/screens/my_capacities_screen.dart';
+import '../../opportunities/screens/my_requests_screen.dart';
+import '../../opportunities/screens/received_requests_screen.dart';
+import '../../messaging/screens/messages_inbox_screen.dart';
+import '../../notifications/notification_bell.dart';
 import '../../profile/screens/my_profile_screen.dart';
 import '../../settings/screens/settings_screen.dart';
 import '../../favorites/screens/favorites_screen.dart';
@@ -20,7 +29,9 @@ import '../../landing/screens/landing_screen.dart';
 import '../../../core/services/admin_provider.dart';
 import '../../admin/screens/admin_screen.dart';
 import '../../../shared/widgets/capacify_logo.dart';
+import '../../../shared/widgets/invite_dialog.dart';
 import '../../../shared/widgets/theme_switcher.dart';
+import '../../../core/services/analytics_service.dart';
 
 class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
@@ -32,12 +43,17 @@ class DashboardScreen extends ConsumerStatefulWidget {
 class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   String? _userPostalCode;
   String? _userEmail;
+  CompanyModel? _userCompany;
   CapacityType? _activeTypeFilter;
   int _feedResetKey = 0;
+  // Active section for the desktop app-shell (sidebar stays pinned; content
+  // swaps in place, no back button). Mobile keeps drawer + pushed routes.
+  _Section _section = _Section.feed;
 
   @override
   void initState() {
     super.initState();
+    AnalyticsService.logScreenView('Dashboard');
     _loadUserData();
   }
 
@@ -47,8 +63,19 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     final user = ref.read(authStateProvider).value;
     if (user != null) {
       setState(() => _userEmail = user.email);
+      // Ensure the Vermittlung wallet exists + is reset for the current month,
+      // so the sidebar balance is live from first load.
+      ref.read(creditServiceProvider).ensureWallet(user.uid);
+      // Fire-and-forget: browser permission prompt + FCM token registration.
+      // Fully non-fatal (see FcmService) — never blocks dashboard load.
+      ref.read(fcmServiceProvider).registerForUser(user.uid);
       final company = await ref.read(companyServiceProvider).getCompanyByOwner(user.uid);
-      if (company != null && mounted) setState(() => _userPostalCode = company.postalCode);
+      if (company != null && mounted) {
+        setState(() {
+          _userPostalCode = company.postalCode;
+          _userCompany = company;
+        });
+      }
     }
   }
 
@@ -67,6 +94,54 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     Navigator.push(context, MaterialPageRoute(builder: (_) => MyCapacitiesScreen(company: company)));
   }
 
+  // Desktop: swap the pinned-shell content. Mobile: close the drawer and push a
+  // full route (a back button is natural on a phone).
+  void _navigate(_Section s) {
+    final isMobile = MediaQuery.of(context).size.width < 768;
+    if (!isMobile) {
+      setState(() => _section = s);
+      return;
+    }
+    Navigator.of(context).maybePop(); // close the drawer
+    switch (s) {
+      case _Section.feed:
+        _refreshLiveFeed();
+        return;
+      case _Section.listings:
+        _navigateToMyCapacities();
+        return;
+      default:
+        final w = _screenFor(s, embedded: false);
+        if (w != null) {
+          Navigator.push(context, MaterialPageRoute(builder: (_) => w));
+        }
+    }
+  }
+
+  // The screen for a section. `embedded` hides its own back button so it reads
+  // as pinned-shell content rather than a pushed page.
+  Widget? _screenFor(_Section s, {required bool embedded}) {
+    switch (s) {
+      case _Section.feed:
+        return null; // handled by the feed column
+      case _Section.companies:
+        return CompanyDirectoryScreen(embedded: embedded);
+      case _Section.listings:
+        final co = _userCompany;
+        return co == null ? null : MyCapacitiesScreen(company: co, embedded: embedded);
+      case _Section.requests:
+        return MyRequestsScreen(embedded: embedded);
+      case _Section.contacts:
+        return ReceivedRequestsScreen(embedded: embedded);
+      case _Section.messages:
+        return MessagesInboxScreen(embedded: embedded);
+      case _Section.favorites:
+        return FavoritesScreen(embedded: embedded);
+      case _Section.admin:
+        return AdminScreen(embedded: embedded);
+    }
+  }
+
   Future<void> _navigateToCreateCapacity() async {
     final l = AppLocalizations.of(context);
     final user = ref.read(authStateProvider).value;
@@ -77,6 +152,40 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(l.noCompanyFirst2), backgroundColor: AppColors.error),
       );
+      return;
+    }
+    // Gate posting behind a complete profile: an anonymous post is only
+    // trustworthy if the firm behind it is real and reachable (phone, address,
+    // trades, description). This also curbs spam/orphan posts from empty
+    // accounts. Missing → route to the profile instead of the composer.
+    if (!company.isProfileComplete) {
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (ctx) {
+          final cc = AppColors.of(ctx);
+          return AlertDialog(
+            backgroundColor: cc.surface,
+            title: Text(l.completeProfileToPostTitle,
+                style: TextStyle(color: cc.textPrimary, fontWeight: FontWeight.w900, fontSize: 17)),
+            content: Text(l.completeProfileToPostBody,
+                style: TextStyle(color: cc.textSecondary, fontSize: 14, height: 1.5)),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(l.cancel)),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+                child: Text(l.completeProfileToPostCta,
+                    style: const TextStyle(fontWeight: FontWeight.w900)),
+              ),
+            ],
+          );
+        },
+      );
+      if (go == true && mounted) {
+        Navigator.push(
+            context, MaterialPageRoute(builder: (_) => const CompanyProfileScreen()));
+      }
       return;
     }
     final size = MediaQuery.of(context).size;
@@ -109,14 +218,27 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     final isMobile = MediaQuery.of(context).size.width < 768;
     final sidebar = _SideBar(
       userEmail: _userEmail,
-      onMyCapacities: _navigateToMyCapacities,
+      active: _section,
+      onNavigate: _navigate,
       onCreateCapacity: _navigateToCreateCapacity,
-      onRefreshFeed: _refreshLiveFeed,
       isMobile: isMobile,
     );
-    final mainContent = Column(
+    final feedColumn = Column(
       children: [
         _TopBar(userEmail: _userEmail, isMobile: isMobile),
+        if (_userCompany != null)
+          _GettingStartedCard(
+            company: _userCompany!,
+            onProfile: () async {
+              await Navigator.push(context, MaterialPageRoute(builder: (_) => const CompanyProfileScreen()));
+              _loadUserData();
+            },
+            onPost: _navigateToCreateCapacity,
+            onAlerts: () async {
+              await ref.read(companyServiceProvider).setEmailOptIn(_userCompany!.id, true);
+              _loadUserData();
+            },
+          ),
         Expanded(
           child: LiveCapacityFeedScreen(
             key: ValueKey(_feedResetKey),
@@ -126,35 +248,46 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         ),
       ],
     );
+    // Desktop shell content: the feed, or the selected section's screen in place.
+    final desktopContent = _section == _Section.feed
+        ? feedColumn
+        : (_screenFor(_section, embedded: true) ?? feedColumn);
     return Scaffold(
       backgroundColor: c.background,
       drawer: isMobile ? Drawer(backgroundColor: c.surface, width: 280, child: sidebar) : null,
-      body: isMobile ? mainContent : Row(children: [sidebar, Expanded(child: mainContent)]),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _navigateToCreateCapacity,
-        backgroundColor: AppColors.primary,
-        elevation: 10,
-        icon: const Icon(Icons.flash_on, color: Colors.white, size: 22),
-        label: Text(l.fabPostCapacity, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 15, letterSpacing: 0.8)),
-      ),
+      body: isMobile ? feedColumn : Row(children: [sidebar, Expanded(child: desktopContent)]),
+      // Keep the quick-post FAB on the feed (and on mobile); hide it on desktop
+      // sub-sections so it doesn't overlap the embedded screen's own controls.
+      floatingActionButton: (isMobile || _section == _Section.feed)
+          ? FloatingActionButton.extended(
+              onPressed: _navigateToCreateCapacity,
+              backgroundColor: AppColors.primary,
+              elevation: 10,
+              icon: const Icon(Icons.flash_on, color: Colors.white, size: 22),
+              label: Text(l.fabPostCapacity, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 15, letterSpacing: 0.8)),
+            )
+          : null,
     );
   }
 }
+
+// Sections of the desktop app-shell.
+enum _Section { feed, companies, listings, requests, contacts, messages, favorites, admin }
 
 // ─── SIDEBAR ──────────────────────────────────────────────────────────────────
 
 class _SideBar extends ConsumerWidget {
   final String? userEmail;
-  final VoidCallback onMyCapacities;
+  final _Section active;
+  final void Function(_Section) onNavigate;
   final VoidCallback onCreateCapacity;
-  final VoidCallback onRefreshFeed;
   final bool isMobile;
 
   const _SideBar({
     required this.userEmail,
-    required this.onMyCapacities,
+    required this.active,
+    required this.onNavigate,
     required this.onCreateCapacity,
-    required this.onRefreshFeed,
     this.isMobile = false,
   });
 
@@ -166,7 +299,21 @@ class _SideBar extends ConsumerWidget {
     final activeCount = capacitiesAsync.maybeWhen(data: (list) => list.length, orElse: () => 0);
     final favoriteCount = ref.watch(userFavoriteCapacitiesProvider).maybeWhen(data: (list) => list.length, orElse: () => 0);
     final isAdmin = ref.watch(isAdminProvider).valueOrNull ?? false;
-    final adminPendingCount = ref.watch(pendingCompaniesProvider).valueOrNull?.length ?? 0;
+    // Aggregate every admin-actionable queue into one badge — verification,
+    // content moderation, AND ratings moderation. Previously this only
+    // reflected pending verifications, so flagged content / pending reviews
+    // could sit unnoticed with no signal on the Admin nav item.
+    final adminPendingCount = (ref.watch(pendingCompaniesProvider).valueOrNull?.length ?? 0) +
+        (ref.watch(pendingRatingsProvider).valueOrNull?.length ?? 0) +
+        (ref.watch(flaggedCapacitiesProvider).valueOrNull?.length ?? 0) +
+        (ref.watch(flaggedCompaniesProvider).valueOrNull?.length ?? 0);
+    // New interest awaiting the poster's response = 'pending' received requests.
+    final uid = ref.watch(authStateProvider).valueOrNull?.uid;
+    // Vermittlungen that landed on my posts (all are granted now).
+    final vermittlungCount = uid == null
+        ? 0
+        : (ref.watch(receivedRequestsProvider(uid)).valueOrNull ?? []).length;
+    final unreadMessages = uid == null ? 0 : ref.watch(totalUnreadProvider(uid));
 
     return Container(
       width: 236,
@@ -216,63 +363,82 @@ class _SideBar extends ConsumerWidget {
               ),
             ),
           ),
-          const SizedBox(height: 16),
+
+          const SizedBox(height: 12),
 
           // ── Scrollable nav items (fills remaining space, scrolls if tight) ──
           Expanded(
-            child: SingleChildScrollView(
-              physics: const ClampingScrollPhysics(),
+            child: _ScrollFadeList(
+              backgroundColor: c.surface,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _NavItem(
                     icon: Icons.rss_feed_rounded,
                     label: l.navLiveFeed,
-                    isActive: true,
-                    onTap: () {
-                      if (isMobile) Navigator.of(context).pop();
-                      onRefreshFeed();
-                    },
+                    isActive: active == _Section.feed,
+                    onTap: () => onNavigate(_Section.feed),
                   ),
                   _NavItem(
                     icon: Icons.business_outlined,
                     label: l.navCompanies,
-                    onTap: () {
-                      if (isMobile) Navigator.of(context).pop();
-                      Navigator.push(context, MaterialPageRoute(builder: (_) => const CompanyDirectoryScreen()));
-                    },
+                    isActive: active == _Section.companies,
+                    onTap: () => onNavigate(_Section.companies),
+                  ),
+                  // ── Mein Netzwerk ──
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 10, 20, 4),
+                    child: Text(l.netzwerkGroupLabel.toUpperCase(),
+                        style: TextStyle(
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 0.8,
+                            color: c.textTertiary)),
                   ),
                   _NavItem(
                     icon: Icons.list_alt_outlined,
-                    label: l.navMyListings,
-                    onTap: () {
-                      if (isMobile) Navigator.of(context).pop();
-                      onMyCapacities();
-                    },
+                    label: l.navAnzeigen,
+                    indented: true,
+                    isActive: active == _Section.listings,
+                    onTap: () => onNavigate(_Section.listings),
                   ),
+                  _NavItem(
+                    icon: Icons.send_outlined,
+                    label: l.navAnfragen,
+                    indented: true,
+                    isActive: active == _Section.requests,
+                    onTap: () => onNavigate(_Section.requests),
+                  ),
+                  _NavItemWithBadge(
+                    icon: Icons.handshake_outlined,
+                    label: l.navKontakte,
+                    indented: true,
+                    isActive: active == _Section.contacts,
+                    badge: vermittlungCount > 0 ? vermittlungCount : null,
+                    onTap: () => onNavigate(_Section.contacts),
+                  ),
+                  _NavItemWithBadge(
+                    icon: Icons.chat_bubble_outline,
+                    label: l.messagesNavLabel,
+                    isActive: active == _Section.messages,
+                    badge: unreadMessages > 0 ? unreadMessages : null,
+                    onTap: () => onNavigate(_Section.messages),
+                  ),
+                  // Favorites — a personal utility, kept at the end just above Admin.
                   _NavItemWithBadge(
                     icon: Icons.favorite_outlined,
                     label: l.navFavorites,
+                    isActive: active == _Section.favorites,
                     badge: favoriteCount > 0 ? favoriteCount : null,
-                    onTap: () {
-                      if (isMobile) Navigator.of(context).pop();
-                      Navigator.push(context, MaterialPageRoute(builder: (_) => const FavoritesScreen()));
-                    },
-                  ),
-                  _NavItem(
-                    icon: Icons.analytics_outlined,
-                    label: l.navAnalytics,
-                    comingSoon: true,
+                    onTap: () => onNavigate(_Section.favorites),
                   ),
                   if (isAdmin)
                     _NavItemWithBadge(
                       icon: Icons.admin_panel_settings_outlined,
                       label: l.navAdmin,
+                      isActive: active == _Section.admin,
                       badge: adminPendingCount > 0 ? adminPendingCount : null,
-                      onTap: () {
-                        if (isMobile) Navigator.of(context).pop();
-                        Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminScreen()));
-                      },
+                      onTap: () => onNavigate(_Section.admin),
                     ),
                   const SizedBox(height: 8),
                 ],
@@ -291,9 +457,33 @@ class _SideBar extends ConsumerWidget {
 
           Divider(color: c.border, height: 1),
 
+          // Invite a company — zero-cost liquidity lever (grows the network).
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+            child: GestureDetector(
+              onTap: () => showInviteDialog(context),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.06),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppColors.primary.withOpacity(0.25)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.person_add_alt_1_rounded, size: 16, color: AppColors.primary),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(l.sidebarInvite, style: const TextStyle(fontSize: 13, color: AppColors.primary, fontWeight: FontWeight.w600))),
+                    const Icon(Icons.arrow_forward_ios_rounded, size: 11, color: AppColors.primary),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
           // Feedback button
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
             child: GestureDetector(
               onTap: () => showDialog(context: context, builder: (_) => const _FeedbackDialog()),
               child: Container(
@@ -351,26 +541,100 @@ class _SideBar extends ConsumerWidget {
   }
 }
 
+// ─── SCROLL-FADE WRAPPER (sidebar "more below" hint) ───────────────────────────
+
+/// Scrolls [child] and overlays a subtle bottom fade while there's unscrolled
+/// content below — a lightweight "more items below" cue for the sidebar nav
+/// list, since it can grow long (Admin tab, badges) and the user otherwise has
+/// no hint that Feedback/invite/logout aren't the last items. Fades itself out
+/// once scrolled to the bottom, and never appears at all if everything fits.
+class _ScrollFadeList extends StatefulWidget {
+  final Widget child;
+  final Color backgroundColor;
+  const _ScrollFadeList({required this.child, required this.backgroundColor});
+
+  @override
+  State<_ScrollFadeList> createState() => _ScrollFadeListState();
+}
+
+class _ScrollFadeListState extends State<_ScrollFadeList> {
+  final _controller = ScrollController();
+  bool _showFade = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_recompute);
+    // maxScrollExtent is unknown until the first layout pass completes.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _recompute());
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _recompute() {
+    if (!mounted || !_controller.hasClients) return;
+    final canScrollMore =
+        _controller.position.maxScrollExtent - _controller.offset > 4;
+    if (canScrollMore != _showFade) setState(() => _showFade = canScrollMore);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: SingleChildScrollView(
+            controller: _controller,
+            physics: const ClampingScrollPhysics(),
+            child: widget.child,
+          ),
+        ),
+        if (_showFade)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: 22,
+            child: IgnorePointer(
+              child: Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.bottomCenter,
+                    end: Alignment.topCenter,
+                    colors: [widget.backgroundColor, widget.backgroundColor.withOpacity(0)],
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 // ─── NAV ITEMS ────────────────────────────────────────────────────────────────
 
 class _NavItem extends StatelessWidget {
   final IconData icon;
   final String label;
   final bool isActive;
+  final bool indented;
   final VoidCallback? onTap;
-  final bool comingSoon;
 
-  const _NavItem({required this.icon, required this.label, this.onTap, this.isActive = false, this.comingSoon = false});
+  const _NavItem({required this.icon, required this.label, this.onTap, this.isActive = false, this.indented = false});
 
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
-    final l = AppLocalizations.of(context);
     return InkWell(
-      onTap: comingSoon ? null : onTap,
+      onTap: onTap,
       child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        margin: EdgeInsets.only(left: indented ? 24 : 10, right: 10, top: 1, bottom: 1),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
         decoration: BoxDecoration(
           color: isActive ? AppColors.primary.withOpacity(0.12) : Colors.transparent,
           borderRadius: BorderRadius.circular(8),
@@ -378,7 +642,7 @@ class _NavItem extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Icon(icon, size: 20, color: isActive ? AppColors.primary : (comingSoon ? c.textTertiary : c.textSecondary)),
+            Icon(icon, size: 20, color: isActive ? AppColors.primary : c.textSecondary),
             const SizedBox(width: 14),
             Expanded(
               child: Text(
@@ -386,21 +650,9 @@ class _NavItem extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 softWrap: false,
-                style: TextStyle(fontSize: 15, fontWeight: isActive ? FontWeight.w700 : FontWeight.normal, color: isActive ? AppColors.primary : (comingSoon ? c.textTertiary : c.textSecondary)),
+                style: TextStyle(fontSize: 15, fontWeight: isActive ? FontWeight.w700 : FontWeight.normal, color: isActive ? AppColors.primary : c.textSecondary),
               ),
             ),
-            if (comingSoon) ...[
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                decoration: BoxDecoration(
-                  color: c.surfaceVariant,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: c.border),
-                ),
-                child: Text(l.comingSoonTag, maxLines: 1, overflow: TextOverflow.ellipsis, softWrap: false, style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: c.textTertiary)),
-              ),
-            ],
           ],
         ),
       ),
@@ -412,30 +664,151 @@ class _NavItemWithBadge extends StatelessWidget {
   final IconData icon;
   final String label;
   final int? badge;
+  final bool indented;
+  final bool isActive;
   final VoidCallback onTap;
 
-  const _NavItemWithBadge({required this.icon, required this.label, required this.onTap, this.badge});
+  const _NavItemWithBadge({required this.icon, required this.label, required this.onTap, this.badge, this.indented = false, this.isActive = false});
 
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final fg = isActive ? AppColors.primary : c.textSecondary;
     return InkWell(
       onTap: onTap,
       child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        decoration: BoxDecoration(borderRadius: BorderRadius.circular(8)),
+        margin: EdgeInsets.only(left: indented ? 24 : 10, right: 10, top: 1, bottom: 1),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        decoration: BoxDecoration(
+          color: isActive ? AppColors.primary.withOpacity(0.12) : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+          border: isActive ? Border.all(color: AppColors.primary.withOpacity(0.3)) : null,
+        ),
         child: Row(
           children: [
-            Icon(icon, size: 20, color: c.textSecondary),
+            Icon(icon, size: 20, color: fg),
             const SizedBox(width: 14),
-            Expanded(child: Text(label, style: TextStyle(fontSize: 15, color: c.textSecondary))),
+            Expanded(child: Text(label, style: TextStyle(fontSize: 15, fontWeight: isActive ? FontWeight.w700 : FontWeight.normal, color: fg))),
             if (badge != null && badge! > 0)
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                 decoration: BoxDecoration(color: AppColors.primary, borderRadius: BorderRadius.circular(10)),
                 child: Text('$badge', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w900)),
               ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── INCOMPLETE PROFILE BANNER ──────────────────────────────────────────────
+
+/// The new-user activation path: a 3-step checklist (complete profile → post
+/// first capacity → turn on alerts) that self-hides once all steps are done.
+/// Post-count is live from the feed stream; profile/alerts come from the loaded
+/// company. Tapping the alerts step opts in with one tap (explicit consent).
+class _GettingStartedCard extends ConsumerWidget {
+  final CompanyModel company;
+  final VoidCallback onProfile;
+  final VoidCallback onPost;
+  final VoidCallback onAlerts;
+
+  const _GettingStartedCard({
+    required this.company,
+    required this.onProfile,
+    required this.onPost,
+    required this.onAlerts,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = AppColors.of(context);
+    final l = AppLocalizations.of(context);
+    final postCount =
+        ref.watch(myCapacitiesProvider(company.id)).valueOrNull?.length ?? 0;
+
+    final profileDone = company.isProfileComplete;
+    final postDone = postCount > 0;
+    final alertsDone = company.emailOptIn;
+
+    // Self-hide once the company is fully activated — no nagging afterwards.
+    if (profileDone && postDone && alertsDone) return const SizedBox.shrink();
+
+    final doneCount = [profileDone, postDone, alertsDone].where((x) => x).length;
+    final isMobile = MediaQuery.of(context).size.width < 768;
+
+    return Container(
+      margin: EdgeInsets.fromLTRB(16, isMobile ? 8 : 12, 16, 0),
+      padding: EdgeInsets.symmetric(horizontal: isMobile ? 12 : 16, vertical: isMobile ? 10 : 16),
+      decoration: BoxDecoration(
+        color: AppColors.primary.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.primary.withOpacity(0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.rocket_launch_outlined, color: AppColors.primary, size: isMobile ? 15 : 18),
+              const SizedBox(width: 8),
+              Text(l.gettingStartedTitle,
+                  style: TextStyle(fontSize: isMobile ? 12.5 : 14, fontWeight: FontWeight.w900, color: c.textPrimary)),
+              const Spacer(),
+              Text('$doneCount/3',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w900, color: AppColors.primary)),
+            ],
+          ),
+          // Explanatory subtitle only on desktop — on mobile every pixel of
+          // vertical space is precious, and the step labels are self-explanatory.
+          if (!isMobile) ...[
+            const SizedBox(height: 4),
+            Text(l.gettingStartedSubtitle,
+                style: TextStyle(fontSize: 12.5, color: c.textSecondary, height: 1.4)),
+          ],
+          SizedBox(height: isMobile ? 4 : 10),
+          _StepRow(label: l.gsStepProfile, done: profileDone, onTap: onProfile, compact: isMobile),
+          _StepRow(label: l.gsStepPost, done: postDone, onTap: onPost, compact: isMobile),
+          _StepRow(label: l.gsStepAlerts, done: alertsDone, onTap: onAlerts, compact: isMobile),
+        ],
+      ),
+    );
+  }
+}
+
+class _StepRow extends StatelessWidget {
+  final String label;
+  final bool done;
+  final VoidCallback onTap;
+  final bool compact;
+  const _StepRow({required this.label, required this.done, required this.onTap, this.compact = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    return InkWell(
+      onTap: done ? null : onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: EdgeInsets.symmetric(vertical: compact ? 3 : 7),
+        child: Row(
+          children: [
+            Icon(done ? Icons.check_circle : Icons.radio_button_unchecked,
+                size: compact ? 15 : 20, color: done ? AppColors.live : AppColors.primary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: compact ? 12 : 13.5,
+                  fontWeight: done ? FontWeight.w500 : FontWeight.w700,
+                  color: done ? c.textTertiary : c.textPrimary,
+                  decoration: done ? TextDecoration.lineThrough : null,
+                ),
+              ),
+            ),
+            if (!done) const Icon(Icons.chevron_right, size: 18, color: AppColors.primary),
           ],
         ),
       ),
@@ -501,6 +874,7 @@ class _TopBar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
+    final uid = ref.watch(authStateProvider).valueOrNull?.uid;
 
     if (isMobile) {
       return Container(
@@ -515,9 +889,10 @@ class _TopBar extends ConsumerWidget {
             const SizedBox(width: 6),
             Container(width: 7, height: 7, decoration: const BoxDecoration(color: AppColors.live, shape: BoxShape.circle)),
             const Spacer(),
-            const LanguageSwitcher(compact: true),
+            if (uid != null) NotificationBell(uid: uid),
+            const LanguageSwitcher(iconOnly: true),
             const SizedBox(width: 8),
-            const ThemeSwitcher(),
+            const ThemeSwitcher(iconOnly: true),
             const SizedBox(width: 8),
             PopupMenuButton<String>(
               color: c.surface,
@@ -561,6 +936,8 @@ class _TopBar extends ConsumerWidget {
             ],
           ),
           const Spacer(),
+          if (uid != null) NotificationBell(uid: uid),
+          const SizedBox(width: 8),
           const LanguageSwitcher(compact: true),
           const SizedBox(width: 8),
           const ThemeSwitcher(),
@@ -605,100 +982,6 @@ class _TopBar extends ConsumerWidget {
   }
 }
 
-// ─── LIVE STATS BAR ───────────────────────────────────────────────────────────
-
-class _LiveStatsBar extends ConsumerWidget {
-  final CapacityType? activeFilter;
-  final Function(CapacityType?) onFilterChanged;
-  final bool isMobile;
-
-  const _LiveStatsBar({required this.activeFilter, required this.onFilterChanged, this.isMobile = false});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final c = AppColors.of(context);
-    final l = AppLocalizations.of(context);
-    final capacitiesAsync = ref.watch(capacitiesProvider);
-
-    return capacitiesAsync.when(
-      data: (capacities) {
-        final total = capacities.length;
-        final offers = capacities.where((cap) => cap.type == CapacityType.offer).length;
-        final needs  = capacities.where((cap) => cap.type == CapacityType.need).length;
-        final liveNow = capacities.where((cap) => cap.isLive).length;
-
-        final pills = [
-          _ClickableStatPill(icon: Icons.circle, label: '$liveNow LIVE', color: AppColors.live, isActive: false, onTap: () => onFilterChanged(null)),
-          const SizedBox(width: 6),
-          Container(width: 1, height: 18, color: c.border),
-          const SizedBox(width: 6),
-          _ClickableStatPill(
-            icon: Icons.volunteer_activism_outlined,
-            label: '$offers ${l.statsAvailable}',
-            color: AppColors.offerColor,
-            isActive: activeFilter == CapacityType.offer,
-            onTap: () => onFilterChanged(activeFilter == CapacityType.offer ? null : CapacityType.offer),
-          ),
-          const SizedBox(width: 6),
-          Container(width: 1, height: 18, color: c.border),
-          const SizedBox(width: 6),
-          _ClickableStatPill(
-            icon: Icons.search_outlined,
-            label: '$needs ${l.statsNeeded}',
-            color: AppColors.needColor,
-            isActive: activeFilter == CapacityType.need,
-            onTap: () => onFilterChanged(activeFilter == CapacityType.need ? null : CapacityType.need),
-          ),
-        ];
-
-        return Container(
-          decoration: BoxDecoration(color: c.background, border: Border(bottom: BorderSide(color: c.border))),
-          child: isMobile
-              ? SingleChildScrollView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10), child: Row(children: pills))
-              : Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                  child: Row(children: [...pills, const Spacer(), Text(l.totalLabel(total), style: TextStyle(fontSize: 13, color: c.textTertiary))]),
-                ),
-        );
-      },
-      loading: () => const SizedBox(height: 40),
-      error: (_, __) => const SizedBox(height: 40),
-    );
-  }
-}
-
-class _ClickableStatPill extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final Color color;
-  final bool isActive;
-  final VoidCallback onTap;
-
-  const _ClickableStatPill({required this.icon, required this.label, required this.color, required this.isActive, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          color: isActive ? color.withOpacity(0.15) : Colors.transparent,
-          borderRadius: BorderRadius.circular(20),
-          border: isActive ? Border.all(color: color.withOpacity(0.4)) : null,
-        ),
-        child: Row(
-          children: [
-            Icon(icon, size: 13, color: color),
-            const SizedBox(width: 5),
-            Text(label, style: TextStyle(fontSize: 13, color: color, fontWeight: isActive ? FontWeight.w900 : FontWeight.w600)),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 // ─── FEEDBACK DIALOG ──────────────────────────────────────────────────────────
 
 class _FeedbackDialog extends StatefulWidget {
@@ -722,7 +1005,7 @@ class _FeedbackDialogState extends State<_FeedbackDialog> {
     final msg = _controller.text.trim();
     if (msg.isEmpty) return;
     setState(() => _sending = true);
-    final uri = Uri(scheme: 'mailto', path: 'hello@capacify.de', queryParameters: {'subject': 'Capacify Feedback', 'body': msg});
+    final uri = Uri(scheme: 'mailto', path: 'info@capacify.de', queryParameters: {'subject': 'Capacify Feedback', 'body': msg});
     try { await launchUrl(uri); } catch (_) {}
     if (mounted) Navigator.of(context).pop();
   }
@@ -731,6 +1014,7 @@ class _FeedbackDialogState extends State<_FeedbackDialog> {
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
+    final isMobile = MediaQuery.of(context).size.width < 768;
     return Dialog(
       backgroundColor: c.surface,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: c.border)),
@@ -773,33 +1057,75 @@ class _FeedbackDialogState extends State<_FeedbackDialog> {
                 decoration: InputDecoration(hintText: l.feedbackHint, alignLabelWithHint: true),
               ),
               const SizedBox(height: 20),
-              Row(
-                children: [
-                  Icon(Icons.mail_outline, size: 13, color: c.textTertiary),
-                  const SizedBox(width: 5),
-                  Text('hello@capacify.de', style: TextStyle(fontSize: 12, color: c.textTertiary)),
-                  const Spacer(),
-                  TextButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    child: Text(l.cancel, style: TextStyle(color: c.textSecondary)),
-                  ),
-                  const SizedBox(width: 8),
-                  ElevatedButton.icon(
-                    onPressed: _sending ? null : _send,
-                    icon: _sending
-                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                        : const Icon(Icons.send_outlined, size: 16),
-                    label: Text(l.feedbackSend, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      minimumSize: Size.zero,
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                      shadowColor: AppColors.primary.withOpacity(0.4),
-                      elevation: 6,
+              if (isMobile) ...[
+                Row(
+                  children: [
+                    Icon(Icons.mail_outline, size: 13, color: c.textTertiary),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(
+                        'info@capacify.de',
+                        style: TextStyle(fontSize: 12, color: c.textTertiary),
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                  ),
-                ],
-              ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: Text(l.cancel, style: TextStyle(color: c.textSecondary)),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: _sending ? null : _send,
+                        icon: _sending
+                            ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                            : const Icon(Icons.send_outlined, size: 16),
+                        label: Text(l.feedbackSend, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shadowColor: AppColors.primary.withOpacity(0.4),
+                          elevation: 6,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ] else
+                Row(
+                  children: [
+                    Icon(Icons.mail_outline, size: 13, color: c.textTertiary),
+                    const SizedBox(width: 5),
+                    Text('info@capacify.de', style: TextStyle(fontSize: 12, color: c.textTertiary)),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: Text(l.cancel, style: TextStyle(color: c.textSecondary)),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton.icon(
+                      onPressed: _sending ? null : _send,
+                      icon: _sending
+                          ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Icon(Icons.send_outlined, size: 16),
+                      label: Text(l.feedbackSend, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        minimumSize: Size.zero,
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                        shadowColor: AppColors.primary.withOpacity(0.4),
+                        elevation: 6,
+                      ),
+                    ),
+                  ],
+                ),
             ],
           ),
         ),

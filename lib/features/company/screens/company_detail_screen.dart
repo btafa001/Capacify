@@ -7,6 +7,35 @@ import '../../../core/services/auth_provider.dart';
 import '../../../core/services/company_provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../shared/widgets/star_rating.dart';
+import '../../../core/services/analytics_service.dart';
+
+/// Opens a company's profile as a compact popup instead of pushing a
+/// full-screen route — mirrors showCapacityDetailDialog so both post and
+/// company cards open the same way, and callers (directory grid, admin
+/// action center) keep their scroll position underneath.
+void showCompanyDetailDialog(BuildContext context, CompanyModel company) {
+  final size = MediaQuery.of(context).size;
+  showGeneralDialog(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: 'Close',
+    barrierColor: Colors.black.withOpacity(0.75),
+    transitionDuration: const Duration(milliseconds: 220),
+    transitionBuilder: (ctx, anim, _, child) => ScaleTransition(
+      scale: Tween<double>(begin: 0.96, end: 1.0).animate(CurvedAnimation(parent: anim, curve: Curves.easeOut)),
+      child: FadeTransition(opacity: anim, child: child),
+    ),
+    pageBuilder: (ctx, _, __) => Align(
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: size.width < 600 ? 0 : 40, vertical: 24),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: size.width < 600 ? size.width : 720, maxHeight: size.height * 0.88),
+          child: ClipRRect(borderRadius: BorderRadius.circular(16), child: CompanyDetailScreen(company: company)),
+        ),
+      ),
+    ),
+  );
+}
 
 class CompanyDetailScreen extends ConsumerWidget {
   final CompanyModel company;
@@ -15,6 +44,7 @@ class CompanyDetailScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    WidgetsBinding.instance.addPostFrameCallback((_) => AnalyticsService.logScreenView('CompanyDetail'));
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
     final currentUserId = ref.watch(authStateProvider).value?.uid;
@@ -85,27 +115,31 @@ class CompanyDetailScreen extends ConsumerWidget {
                         ),
                       ),
                       const SizedBox(height: 8),
-                      // Trade badge
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: AppColors.primary.withOpacity(0.15),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: AppColors.primary.withOpacity(0.3),
+                      // Trade badges
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: company.trades.map((trade) => Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 4,
                           ),
-                        ),
-                        child: Text(
-                          l.tradeName(company.trade),
-                          style: const TextStyle(
-                            color: AppColors.primary,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: AppColors.primary.withOpacity(0.3),
+                            ),
                           ),
-                        ),
+                          child: Text(
+                            l.tradeName(trade),
+                            style: const TextStyle(
+                              color: AppColors.primary,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        )).toList(),
                       ),
                       const SizedBox(height: 12),
                       // Location and employees
@@ -143,6 +177,66 @@ class CompanyDetailScreen extends ConsumerWidget {
                           ),
                         ],
                       ),
+                      // Trust/liveness: member-since + last-active (only shown
+                      // when recent, so it never reads as a negative "inactive").
+                      Builder(builder: (_) {
+                        String? activeLabel;
+                        final la = company.lastActiveAt;
+                        if (la != null) {
+                          final d = DateTime.now().difference(la).inDays;
+                          if (d <= 0) {
+                            activeLabel = l.activeTodayLabel;
+                          } else if (d == 1) {
+                            activeLabel = l.activeYesterdayLabel;
+                          } else if (d <= 14) {
+                            activeLabel = l.activeDaysAgoLabel(d);
+                          }
+                        }
+                        final respHours = company.avgResponseHours;
+                        if (company.createdAt == null &&
+                            activeLabel == null &&
+                            respHours == null &&
+                            company.completedCollaborations == 0) {
+                          return const SizedBox.shrink();
+                        }
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Wrap(spacing: 14, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
+                            if (company.createdAt != null)
+                              Row(mainAxisSize: MainAxisSize.min, children: [
+                                Icon(Icons.event_available_outlined, size: 15, color: c.textTertiary),
+                                const SizedBox(width: 5),
+                                Text(l.memberSinceLabel(company.createdAt!.year),
+                                    style: TextStyle(fontSize: 13, color: c.textTertiary)),
+                              ]),
+                            if (activeLabel != null)
+                              Row(mainAxisSize: MainAxisSize.min, children: [
+                                Container(width: 7, height: 7, decoration: const BoxDecoration(color: AppColors.live, shape: BoxShape.circle)),
+                                const SizedBox(width: 6),
+                                Text(activeLabel,
+                                    style: const TextStyle(fontSize: 13, color: AppColors.live, fontWeight: FontWeight.w700)),
+                              ]),
+                            if (respHours != null)
+                              Row(mainAxisSize: MainAxisSize.min, children: [
+                                Icon(Icons.bolt_outlined, size: 15, color: c.textTertiary),
+                                const SizedBox(width: 5),
+                                Text(l.responseTimeLabel(respHours),
+                                    style: TextStyle(fontSize: 13, color: c.textTertiary)),
+                              ]),
+                            if (company.completedCollaborations > 0)
+                              Row(mainAxisSize: MainAxisSize.min, children: [
+                                const Icon(Icons.handshake_outlined, size: 15, color: AppColors.live),
+                                const SizedBox(width: 5),
+                                Text(
+                                  company.repeatCollaborations > 0
+                                      ? '${l.collabCountLabel(company.completedCollaborations)} · ${l.collabRepeatLabel(company.repeatCollaborations)}'
+                                      : l.collabCountLabel(company.completedCollaborations),
+                                  style: const TextStyle(fontSize: 13, color: AppColors.live, fontWeight: FontWeight.w700),
+                                ),
+                              ]),
+                          ]),
+                        );
+                      }),
                     ],
                   );
 
@@ -198,7 +292,7 @@ class CompanyDetailScreen extends ConsumerWidget {
                         summary,
                         if (rateButton != null) ...[
                           const SizedBox(height: 12),
-                          SizedBox(width: double.infinity, child: rateButton),
+                          Align(alignment: Alignment.centerLeft, child: rateButton),
                         ],
                       ],
                     );
@@ -229,6 +323,32 @@ class CompanyDetailScreen extends ConsumerWidget {
               ),
 
               const SizedBox(height: 24),
+
+              // Qualifications & memberships — a self-declared trust signal.
+              if (company.certifications.trim().isNotEmpty) ...[
+                _DetailSection(
+                  title: l.certificationsTitle,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.verified_outlined,
+                          size: 18, color: AppColors.success),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          company.certifications,
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: c.textSecondary,
+                            height: 1.6,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24),
+              ],
 
               // Services
               if (company.services.isNotEmpty) ...[
@@ -439,6 +559,8 @@ class _RateButton extends ConsumerWidget {
       style: OutlinedButton.styleFrom(
         foregroundColor: AppColors.primary,
         side: const BorderSide(color: AppColors.primary),
+        minimumSize: Size.zero,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       ),
     );
   }
@@ -502,10 +624,55 @@ class _RateCompanyDialogState extends ConsumerState<_RateCompanyDialog> {
             rating: _selected,
             comment: _commentController.text.trim(),
           );
+      // myRatingForCompanyProvider is a one-time FutureProvider (not a
+      // stream), so it won't pick up this change on its own — invalidate
+      // it so the "Bewerten"/"Bewertung bearbeiten" button reflects the
+      // new rating immediately rather than on next full page load.
+      ref.invalidate(myRatingForCompanyProvider((companyId: widget.companyId, userId: widget.raterUserId)));
       if (mounted) {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(l.ratingSubmittedSuccess), backgroundColor: AppColors.success),
+        );
+      }
+    } catch (e) {
+      if (mounted) setState(() => _error = l.errorWithMessage(e));
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  Future<void> _delete() async {
+    final l = AppLocalizations.of(context);
+    final c = AppColors.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: c.surface,
+        title: Text(l.deleteRatingConfirmTitle, style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.w900, fontSize: 17)),
+        content: Text(l.deleteRatingConfirmBody, style: TextStyle(color: c.textSecondary, fontSize: 14, height: 1.5)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(l.cancel)),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l.deleteButton, style: const TextStyle(color: AppColors.error, fontWeight: FontWeight.w900)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _isSaving = true);
+    try {
+      await ref.read(companyServiceProvider).deleteRating(
+            ratingId: widget.existingRating!.id,
+            companyId: widget.companyId,
+          );
+      ref.invalidate(myRatingForCompanyProvider((companyId: widget.companyId, userId: widget.raterUserId)));
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l.ratingDeletedSnackbar), backgroundColor: AppColors.success),
         );
       }
     } catch (e) {
@@ -553,6 +720,13 @@ class _RateCompanyDialogState extends ConsumerState<_RateCompanyDialog> {
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
+                if (widget.existingRating != null) ...[
+                  TextButton(
+                    onPressed: _isSaving ? null : _delete,
+                    child: Text(l.deleteRatingButton, style: const TextStyle(color: AppColors.error)),
+                  ),
+                  const Spacer(),
+                ],
                 TextButton(
                   onPressed: _isSaving ? null : () => Navigator.pop(context),
                   child: Text(l.cancel),
@@ -560,6 +734,10 @@ class _RateCompanyDialogState extends ConsumerState<_RateCompanyDialog> {
                 const SizedBox(width: 8),
                 ElevatedButton(
                   onPressed: _isSaving ? null : _submit,
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: Size.zero,
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  ),
                   child: _isSaving
                       ? const SizedBox(
                           height: 16,

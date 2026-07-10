@@ -4,6 +4,8 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/services/auth_provider.dart';
 import '../../../shared/widgets/custom_text_field.dart';
 import '../../../core/localization/app_localizations.dart';
+import '../../../core/services/analytics_service.dart';
+import '../../../core/utils/validators.dart';
 
 class ForgotPasswordScreen extends ConsumerStatefulWidget {
   const ForgotPasswordScreen({super.key});
@@ -21,16 +23,21 @@ class _ForgotPasswordScreenState
   String? _errorMessage;
 
   @override
+  void initState() {
+    super.initState();
+    AnalyticsService.logScreenView('ForgotPassword');
+  }
+
+  @override
   void dispose() {
     _emailController.dispose();
     super.dispose();
   }
 
   Future<void> _sendReset() async {
-    if (_emailController.text.isEmpty) {
-      setState(() {
-        _errorMessage = AppLocalizations.of(context).enterEmail;
-      });
+    final emailError = Validators.email(_emailController.text, AppLocalizations.of(context));
+    if (emailError != null) {
+      setState(() => _errorMessage = emailError);
       return;
     }
 

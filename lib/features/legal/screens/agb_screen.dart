@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/services/analytics_service.dart';
 
 class AGBScreen extends StatelessWidget {
   const AGBScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
+    WidgetsBinding.instance.addPostFrameCallback((_) => AnalyticsService.logScreenView('AGB'));
     final c = AppColors.of(context);
     return Scaffold(
       backgroundColor: c.background,

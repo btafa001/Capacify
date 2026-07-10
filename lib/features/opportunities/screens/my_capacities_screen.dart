@@ -4,16 +4,20 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/models/capacity_model.dart';
 import '../../../core/models/company_model.dart';
 import '../../../core/services/capacity_provider.dart';
+import '../../../core/services/contact_request_provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import 'create_capacity_screen.dart';
 import 'capacity_detail_screen.dart';
+import '../../../core/services/analytics_service.dart';
 
 class MyCapacitiesScreen extends ConsumerStatefulWidget {
   final CompanyModel company;
+  final bool embedded;
 
   const MyCapacitiesScreen({
     super.key,
     required this.company,
+    this.embedded = false,
   });
 
   @override
@@ -32,6 +36,12 @@ class _MyCapacitiesScreenState
     'Vergeben',
     'Storniert',
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    AnalyticsService.logScreenView('MyCapacities');
+  }
 
   String _statusDisplayLabel(AppLocalizations l, CapacityStatus s) {
     switch (s) {
@@ -167,18 +177,32 @@ class _MyCapacitiesScreenState
     final postsAsync =
         ref.watch(myCapacitiesProvider(widget.company.id));
 
+    // Per-post count of pending (not-yet-answered) contact requests — the
+    // poster pull-back signal ("3 neue Anfragen") that brings owners back daily.
+    final received =
+        ref.watch(receivedRequestsProvider(widget.company.id)).valueOrNull ?? [];
+    final Map<String, int> pendingByPost = {};
+    for (final r in received) {
+      if (r.status == 'pending') {
+        pendingByPost[r.postId] = (pendingByPost[r.postId] ?? 0) + 1;
+      }
+    }
+
     return Scaffold(
       backgroundColor: c.background,
       appBar: AppBar(
         backgroundColor: c.surface,
         elevation: 0,
-        leading: IconButton(
-          icon: Icon(
-            Icons.arrow_back,
-            color: c.textPrimary,
-          ),
-          onPressed: () => Navigator.pop(context),
-        ),
+        automaticallyImplyLeading: false,
+        leading: widget.embedded
+            ? null
+            : IconButton(
+                icon: Icon(
+                  Icons.arrow_back,
+                  color: c.textPrimary,
+                ),
+                onPressed: () => Navigator.pop(context),
+              ),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -277,13 +301,14 @@ class _MyCapacitiesScreenState
               .length;
 
           final filtered = _applyFilter(allPosts);
+          final isMobile = MediaQuery.of(context).size.width < 768;
 
           return Column(
             children: [
               // Stats bar
               Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
+                padding: EdgeInsets.symmetric(
+                  horizontal: isMobile ? 12 : 20,
                   vertical: 12,
                 ),
                 decoration: BoxDecoration(
@@ -302,19 +327,19 @@ class _MyCapacitiesScreenState
                       label: l.statusActiveTitle,
                       color: AppColors.live,
                     ),
-                    const SizedBox(width: 16),
+                    SizedBox(width: isMobile ? 8 : 16),
                     _StatDot(
                       count: inProgressCount,
                       label: l.negotiationShortLabel,
                       color: AppColors.distance,
                     ),
-                    const SizedBox(width: 16),
+                    SizedBox(width: isMobile ? 8 : 16),
                     _StatDot(
                       count: closedCount,
                       label: l.statusAwardedTitle,
                       color: AppColors.offerColor,
                     ),
-                    const SizedBox(width: 16),
+                    SizedBox(width: isMobile ? 8 : 16),
                     _StatDot(
                       count: cancelledCount,
                       label: l.statusCancelledTitle,
@@ -324,7 +349,7 @@ class _MyCapacitiesScreenState
                     Text(
                       l.totalLabel(allPosts.length),
                       style: TextStyle(
-                        fontSize: 12,
+                        fontSize: isMobile ? 10 : 12,
                         color: c.textTertiary,
                       ),
                     ),
@@ -335,9 +360,9 @@ class _MyCapacitiesScreenState
               // Filter chips
               Container(
                 color: c.surface,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 10,
+                padding: EdgeInsets.symmetric(
+                  horizontal: isMobile ? 12 : 16,
+                  vertical: isMobile ? 8 : 10,
                 ),
                 child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
@@ -345,8 +370,8 @@ class _MyCapacitiesScreenState
                     children: _filters.map((f) {
                       final isActive = _filter == f;
                       return Padding(
-                        padding: const EdgeInsets.only(
-                          right: 8,
+                        padding: EdgeInsets.only(
+                          right: isMobile ? 6 : 8,
                         ),
                         child: GestureDetector(
                           onTap: () => setState(
@@ -357,9 +382,9 @@ class _MyCapacitiesScreenState
                               milliseconds: 180,
                             ),
                             padding:
-                                const EdgeInsets.symmetric(
-                              horizontal: 14,
-                              vertical: 8,
+                                EdgeInsets.symmetric(
+                              horizontal: isMobile ? 11 : 14,
+                              vertical: isMobile ? 6 : 8,
                             ),
                             decoration: BoxDecoration(
                               color: isActive
@@ -377,7 +402,7 @@ class _MyCapacitiesScreenState
                             child: Text(
                               _filterDisplayLabel(l, f),
                               style: TextStyle(
-                                fontSize: 12,
+                                fontSize: isMobile ? 11 : 12,
                                 fontWeight: isActive
                                     ? FontWeight.w700
                                     : FontWeight.normal,
@@ -431,6 +456,8 @@ class _MyCapacitiesScreenState
                                 padding: const EdgeInsets.symmetric(horizontal: 24),
                                 child: _MyPostingCard(
                                   capacity: filtered[index],
+                                  pendingRequests:
+                                      pendingByPost[filtered[index].id] ?? 0,
                                   onStatusChange: (newStatus) =>
                                       _confirmStatusChange(
                                     context: context,
@@ -452,6 +479,38 @@ class _MyCapacitiesScreenState
                                       newStatus,
                                     ),
                                   ),
+                                  onRepost: () => Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => CreateCapacityScreen(
+                                        company: widget.company,
+                                        prefill: filtered[index],
+                                      ),
+                                    ),
+                                  ),
+                                  onReconfirm: () async {
+                                    try {
+                                      await ref
+                                          .read(capacityServiceProvider)
+                                          .reconfirmAvailability(
+                                              capacityId: filtered[index].id);
+                                      if (context.mounted) {
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                              content: Text(l.reconfirmedSnackbar),
+                                              backgroundColor: AppColors.live),
+                                        );
+                                      }
+                                    } catch (e) {
+                                      if (context.mounted) {
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                              content: Text(l.errorWithMessage(e)),
+                                              backgroundColor: AppColors.error),
+                                        );
+                                      }
+                                    }
+                                  },
                                 ),
                               ),
                             ),
@@ -551,21 +610,22 @@ class _StatDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final isMobile = MediaQuery.of(context).size.width < 768;
     return Row(
       children: [
         Container(
-          width: 8,
-          height: 8,
+          width: isMobile ? 6 : 8,
+          height: isMobile ? 6 : 8,
           decoration: BoxDecoration(
             color: color,
             shape: BoxShape.circle,
           ),
         ),
-        const SizedBox(width: 5),
+        SizedBox(width: isMobile ? 4 : 5),
         Text(
           '$count $label',
           style: TextStyle(
-            fontSize: 12,
+            fontSize: isMobile ? 11 : 12,
             color: c.textSecondary,
             fontWeight: FontWeight.w600,
           ),
@@ -579,11 +639,17 @@ class _StatDot extends StatelessWidget {
 
 class _MyPostingCard extends StatelessWidget {
   final CapacityModel capacity;
+  final int pendingRequests;
   final Function(CapacityStatus) onStatusChange;
+  final VoidCallback onRepost;
+  final VoidCallback onReconfirm;
 
   const _MyPostingCard({
     required this.capacity,
+    this.pendingRequests = 0,
     required this.onStatusChange,
+    required this.onRepost,
+    required this.onReconfirm,
   });
 
   Color get _accentColor {
@@ -613,16 +679,7 @@ class _MyPostingCard extends StatelessWidget {
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
     return GestureDetector(
-      onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => CapacityDetailScreen(
-              capacity: capacity,
-            ),
-          ),
-        );
-      },
+      onTap: () => showCapacityDetailDialog(context, capacity),
       child: AnimatedOpacity(
         duration: const Duration(milliseconds: 200),
         opacity: _isDimmed ? 0.55 : 1.0,
@@ -739,6 +796,36 @@ class _MyPostingCard extends StatelessWidget {
                           ),
                         ],
 
+                        if (pendingRequests > 0) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 7,
+                              vertical: 3,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.live.withOpacity(0.14),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.mark_email_unread_outlined,
+                                    size: 10, color: AppColors.live),
+                                const SizedBox(width: 4),
+                                Text(
+                                  l.newRequestsBadge(pendingRequests),
+                                  style: const TextStyle(
+                                    color: AppColors.live,
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+
                         const Spacer(),
 
                         Text(
@@ -812,6 +899,28 @@ class _MyPostingCard extends StatelessWidget {
                         ],
                       ],
                     ),
+                    // Visible one-tap reconfirm — a habit action, so it lives on
+                    // the card, not buried in the ⋮ menu. Keeps supply fresh.
+                    if (capacity.isActive || capacity.isInProgress) ...[
+                      const SizedBox(height: 10),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: OutlinedButton.icon(
+                          onPressed: onReconfirm,
+                          icon: const Icon(Icons.verified_outlined, size: 15),
+                          label: Text(l.reconfirmAction),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppColors.live,
+                            side: BorderSide(color: AppColors.live.withOpacity(0.5)),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                            visualDensity: VisualDensity.compact,
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -874,6 +983,25 @@ class _MyPostingCard extends StatelessWidget {
                           ],
                         ),
                       ),
+                    if (capacity.isActive || capacity.isInProgress)
+                      PopupMenuItem(
+                        value: 'reconfirm',
+                        child: Row(children: [
+                          const Icon(Icons.verified_outlined, color: AppColors.live, size: 17),
+                          const SizedBox(width: 10),
+                          Text(l.reconfirmAction,
+                              style: const TextStyle(color: AppColors.live, fontSize: 14, fontWeight: FontWeight.w700)),
+                        ]),
+                      ),
+                    PopupMenuItem(
+                      value: 'repost',
+                      child: Row(children: [
+                        Icon(Icons.replay_outlined, color: c.textSecondary, size: 17),
+                        const SizedBox(width: 10),
+                        Text(l.repostAction,
+                            style: TextStyle(color: c.textPrimary, fontSize: 14)),
+                      ]),
+                    ),
                     PopupMenuItem(
                       value: 'cancel',
                       child: Row(
@@ -911,6 +1039,12 @@ class _MyPostingCard extends StatelessWidget {
                         onStatusChange(
                           CapacityStatus.cancelled,
                         );
+                        break;
+                      case 'reconfirm':
+                        onReconfirm();
+                        break;
+                      case 'repost':
+                        onRepost();
                         break;
                     }
                   },

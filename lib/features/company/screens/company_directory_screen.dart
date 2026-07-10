@@ -5,29 +5,14 @@ import '../../../core/models/company_model.dart';
 import '../../../core/services/company_provider.dart';
 import '../../../shared/widgets/capacify_logo.dart';
 import '../../../shared/widgets/star_rating.dart';
+import '../../../shared/widgets/trade_pill_dropdown.dart';
 import '../../../core/localization/app_localizations.dart';
 import 'company_detail_screen.dart';
-
-const List<String> kAllTrades = [
-  'Alle Gewerke',
-  'Generalunternehmer',
-  'Rohbau',
-  'Trockenbau',
-  'Elektro',
-  'Sanitär & Heizung',
-  'Dach',
-  'Fassade',
-  'Tiefbau',
-  'Architektur',
-  'Statik',
-  'Stahl',
-  'Beton',
-  'HVAC',
-  'Lieferant',
-];
+import '../../../core/services/analytics_service.dart';
 
 class CompanyDirectoryScreen extends ConsumerStatefulWidget {
-  const CompanyDirectoryScreen({super.key});
+  final bool embedded;
+  const CompanyDirectoryScreen({super.key, this.embedded = false});
 
   @override
   ConsumerState<CompanyDirectoryScreen> createState() =>
@@ -37,9 +22,15 @@ class CompanyDirectoryScreen extends ConsumerStatefulWidget {
 class _CompanyDirectoryScreenState
     extends ConsumerState<CompanyDirectoryScreen> {
   String _searchText = '';
-  String _selectedTrade = 'Alle Gewerke';
+  List<String> _selectedTrades = [];
   bool _onlyVerified = false;
   final _searchController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    AnalyticsService.logScreenView('CompanyDirectory');
+  }
 
   @override
   void dispose() {
@@ -50,12 +41,13 @@ class _CompanyDirectoryScreenState
   List<CompanyModel> _filterCompanies(List<CompanyModel> companies) {
     return companies.where((c) {
       if (_onlyVerified && !c.isVerified) return false;
-      if (_selectedTrade != 'Alle Gewerke' && c.trade != _selectedTrade) return false;
+      if (_selectedTrades.isNotEmpty &&
+          !c.trades.any((t) => _selectedTrades.contains(t))) return false;
       if (_searchText.isNotEmpty) {
         final q = _searchText.toLowerCase();
         return c.name.toLowerCase().contains(q) ||
             c.city.toLowerCase().contains(q) ||
-            c.trade.toLowerCase().contains(q);
+            c.trades.any((t) => t.toLowerCase().contains(q));
       }
       return true;
     }).toList();
@@ -72,10 +64,13 @@ class _CompanyDirectoryScreenState
       appBar: AppBar(
         backgroundColor: c.surface,
         elevation: 0,
-        leading: IconButton(
-          icon: Icon(Icons.arrow_back, color: c.textPrimary),
-          onPressed: () => Navigator.pop(context),
-        ),
+        automaticallyImplyLeading: false,
+        leading: widget.embedded
+            ? null
+            : IconButton(
+                icon: Icon(Icons.arrow_back, color: c.textPrimary),
+                onPressed: () => Navigator.pop(context),
+              ),
         title: CapacifyWordmark(symbolSize: 28, fontSize: 18, textColor: c.textPrimary),
         actions: [
           companiesAsync.maybeWhen(
@@ -163,9 +158,9 @@ class _CompanyDirectoryScreenState
                         onTap: () => setState(() => _onlyVerified = !_onlyVerified),
                       ),
                       const SizedBox(width: 8),
-                      _TradePillDropdown(
-                        selected: _selectedTrade,
-                        onChanged: (v) => setState(() => _selectedTrade = v),
+                      TradePillDropdown(
+                        selected: _selectedTrades,
+                        onChanged: (v) => setState(() => _selectedTrades = v),
                       ),
                     ],
                   ),
@@ -274,72 +269,6 @@ class _PillToggle extends StatelessWidget {
   }
 }
 
-// ─── TRADE PILL DROPDOWN ────────────────────────────
-
-class _TradePillDropdown extends StatelessWidget {
-  final String selected;
-  final Function(String) onChanged;
-
-  const _TradePillDropdown({required this.selected, required this.onChanged});
-
-  @override
-  Widget build(BuildContext context) {
-    final c = AppColors.of(context);
-    final l = AppLocalizations.of(context);
-    final isActive = selected != 'Alle Gewerke';
-    return GestureDetector(
-      onTap: () {
-        showModalBottomSheet(
-          context: context,
-          backgroundColor: c.surface,
-          shape: const RoundedRectangleBorder(
-            borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-          ),
-          builder: (ctx) {
-            final cc = AppColors.of(ctx);
-            final cl = AppLocalizations.of(ctx);
-            return Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const SizedBox(height: 12),
-                Container(width: 40, height: 4, decoration: BoxDecoration(color: cc.border, borderRadius: BorderRadius.circular(2))),
-                const SizedBox(height: 8),
-                ...kAllTrades.map((t) => ListTile(
-                  title: Text(t == 'Alle Gewerke' ? cl.tradeAll : cl.tradeName(t), style: TextStyle(color: cc.textPrimary, fontSize: 16)),
-                  trailing: selected == t ? const Icon(Icons.check, color: AppColors.primary) : null,
-                  onTap: () { onChanged(t); Navigator.pop(ctx); },
-                )),
-                const SizedBox(height: 16),
-              ],
-            );
-          },
-        );
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-        decoration: BoxDecoration(
-          color: isActive ? AppColors.primary.withOpacity(0.15) : c.surfaceVariant,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: isActive ? AppColors.primary : c.border),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.build_outlined, size: 15, color: isActive ? AppColors.primary : c.textSecondary),
-            const SizedBox(width: 7),
-            Text(
-              isActive ? selected : l.tradeFilterLabel,
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: isActive ? AppColors.primary : c.textSecondary),
-            ),
-            const SizedBox(width: 4),
-            Icon(Icons.expand_more, size: 15, color: isActive ? AppColors.primary : c.textSecondary),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 // ─── COMPANY CARD ───────────────────────────────────
 
 class _CompanyCard extends StatefulWidget {
@@ -363,10 +292,7 @@ class _CompanyCardState extends State<_CompanyCard> {
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
       child: GestureDetector(
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => CompanyDetailScreen(company: company)),
-        ),
+        onTap: () => showCompanyDetailDialog(context, company),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
           decoration: BoxDecoration(
@@ -454,7 +380,7 @@ class _CompanyCardState extends State<_CompanyCard> {
                             border: Border.all(color: AppColors.primary.withOpacity(0.25)),
                           ),
                           child: Text(
-                            l.tradeName(company.trade),
+                            company.trades.map((t) => l.tradeName(t)).join(', '),
                             style: const TextStyle(color: AppColors.primary, fontSize: 11, fontWeight: FontWeight.w700),
                             overflow: TextOverflow.ellipsis,
                           ),

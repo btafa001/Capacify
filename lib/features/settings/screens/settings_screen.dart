@@ -4,11 +4,18 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/services/auth_provider.dart';
 import '../../../core/services/auth_service.dart';
 import '../../../core/services/seed_service.dart';
+import '../../../core/services/admin_provider.dart';
+import '../../../shared/widgets/capacify_logo.dart';
 import '../../landing/screens/landing_screen.dart';
+import '../../landing/screens/about_screen.dart';
 import '../../legal/screens/agb_screen.dart';
 import '../../legal/screens/datenschutz_screen.dart';
 import '../../legal/screens/impressum_screen.dart';
 import '../../../core/localization/app_localizations.dart';
+import '../../../core/services/analytics_service.dart';
+import '../../../core/services/consent_provider.dart';
+import '../../../core/services/company_provider.dart';
+import '../../../core/services/privacy_service.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -21,8 +28,125 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState
     extends ConsumerState<SettingsScreen> {
   bool _emailNotifications = true;
-  bool _newPostAlerts = true;
+  bool _newPostAlerts = false;
   bool _messageAlerts = false;
+
+  @override
+  void initState() {
+    super.initState();
+    AnalyticsService.logScreenView('Settings');
+    _loadEmailNotificationPref();
+  }
+
+  Future<void> _loadEmailNotificationPref() async {
+    final auth = ref.read(authServiceProvider);
+    final uid = auth.currentUser?.uid;
+    if (uid == null) return;
+    final on = await auth.getEmailNotifications(uid);
+    final messageAlertsOn = await auth.getNotifyOnNewMessage(uid);
+    // Retention-email opt-in lives on the company doc (what the Cloud Functions
+    // read); load it into the "new matching capacities" toggle.
+    final company = await ref.read(companyServiceProvider).getCompanyByOwner(uid);
+    if (mounted) {
+      setState(() {
+        _emailNotifications = on;
+        _newPostAlerts = company?.emailOptIn ?? false;
+        _messageAlerts = messageAlertsOn;
+      });
+    }
+  }
+
+  Future<void> _setEmailNotifications(bool v) async {
+    setState(() => _emailNotifications = v);
+    final auth = ref.read(authServiceProvider);
+    final uid = auth.currentUser?.uid;
+    if (uid != null) {
+      await auth.setEmailNotifications(uid: uid, enabled: v);
+    }
+  }
+
+  /// Gates the onNewMessage Cloud Function's push + email (see functions/index.js).
+  Future<void> _setMessageAlerts(bool v) async {
+    setState(() => _messageAlerts = v);
+    final auth = ref.read(authServiceProvider);
+    final uid = auth.currentUser?.uid;
+    if (uid != null) {
+      await auth.setNotifyOnNewMessage(uid: uid, enabled: v);
+    }
+  }
+
+  /// Opt in/out of the retention emails (match alerts + weekly digest). Writes
+  /// the company's emailOptIn flag that notifyOnNewCapacity / weeklyDigest read.
+  Future<void> _setNewCapacityAlerts(bool v) async {
+    setState(() => _newPostAlerts = v);
+    final uid = ref.read(authServiceProvider).currentUser?.uid;
+    if (uid != null) {
+      await ref.read(companyServiceProvider).setEmailOptIn(uid, v);
+    }
+  }
+
+  Future<void> _exportData() async {
+    final l = AppLocalizations.of(context);
+    final uid = ref.read(authServiceProvider).currentUser?.uid;
+    if (uid == null) return;
+    try {
+      await ref.read(privacyServiceProvider).downloadMyData(uid);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(l.exportDataStarted), backgroundColor: AppColors.live));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(l.genericErrorRetry), backgroundColor: AppColors.error));
+      }
+    }
+  }
+
+  Future<void> _confirmDeleteAccount() async {
+    final l = AppLocalizations.of(context);
+    final c = AppColors.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: c.surface,
+        title: Text(l.deleteAccountConfirmTitle,
+            style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.w900, fontSize: 17)),
+        content: Text(l.deleteAccountConfirmBody,
+            style: TextStyle(color: c.textSecondary, fontSize: 14, height: 1.5)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(l.cancel)),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l.deleteAccountConfirmCta,
+                style: const TextStyle(color: AppColors.error, fontWeight: FontWeight.w900)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final uid = ref.read(authServiceProvider).currentUser?.uid;
+    if (uid == null) return;
+    try {
+      await ref.read(privacyServiceProvider).deleteMyAccount(uid);
+      if (mounted) {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const LandingScreen()),
+          (route) => false,
+        );
+      }
+    } catch (e) {
+      // Firebase requires a recent login to delete the Auth user; surface a
+      // clear "please sign in again, then retry" rather than a raw exception.
+      final msg = e.toString().contains('requires-recent-login')
+          ? l.deleteAccountReauthNeeded
+          : l.genericErrorRetry;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(msg), backgroundColor: AppColors.error));
+      }
+    }
+  }
 
   void _showChangePasswordDialog() async {
     final success = await showDialog<bool>(
@@ -45,6 +169,7 @@ class _SettingsScreenState
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
+    final isMobile = MediaQuery.of(context).size.width < 768;
     return Scaffold(
       backgroundColor: c.background,
       appBar: AppBar(
@@ -72,26 +197,24 @@ class _SettingsScreenState
             constraints:
                 const BoxConstraints(maxWidth: 700),
             child: Padding(
-              padding: const EdgeInsets.all(20),
+              padding: EdgeInsets.all(isMobile ? 14 : 20),
               child: Column(
                 crossAxisAlignment:
                     CrossAxisAlignment.start,
                 children: [
                   // ── NOTIFICATIONS ──
-                  _SectionLabel(
-                      label: l.notificationsSection),
-                  const SizedBox(height: 10),
+                  _SectionLabel(label: l.notificationsSection),
+                  SizedBox(height: isMobile ? 8 : 10),
 
                   _SettingsCard(
                     children: [
+                      // Live, persisted preference: email me on new requests.
                       _ToggleTile(
                         icon: Icons.email_outlined,
                         title: l.emailNotificationsTitle,
                         subtitle: l.emailNotificationsSubtitle,
                         value: _emailNotifications,
-                        onChanged: (v) => setState(
-                          () => _emailNotifications = v,
-                        ),
+                        onChanged: _setEmailNotifications,
                       ),
                       _Divider(),
                       _ToggleTile(
@@ -99,9 +222,7 @@ class _SettingsScreenState
                         title: l.newCapacitiesTitle,
                         subtitle: l.newPostingsSubtitle,
                         value: _newPostAlerts,
-                        onChanged: (v) => setState(
-                          () => _newPostAlerts = v,
-                        ),
+                        onChanged: _setNewCapacityAlerts,
                       ),
                       _Divider(),
                       _ToggleTile(
@@ -109,164 +230,16 @@ class _SettingsScreenState
                         title: l.messagesTitle,
                         subtitle: l.newMessagesSubtitle,
                         value: _messageAlerts,
-                        onChanged: (v) => setState(
-                          () => _messageAlerts = v,
-                        ),
+                        onChanged: _setMessageAlerts,
                       ),
                     ],
                   ),
 
-                  const SizedBox(height: 28),
-
-                  // ── LEGAL ──
-                  _SectionLabel(label: l.legalSection),
-                  const SizedBox(height: 10),
-
-                  _SettingsCard(
-                    children: [
-                      _LinkTile(
-                        icon: Icons.description_outlined,
-                        title: l.agbLabel,
-                        subtitle: l.agbFullName,
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) =>
-                                const AGBScreen(),
-                          ),
-                        ),
-                      ),
-                      _Divider(),
-                      _LinkTile(
-                        icon: Icons.security_outlined,
-                        title: l.privacyLabel,
-                        subtitle: l.gdprSubtitle,
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) =>
-                                const DatenschutzScreen(),
-                          ),
-                        ),
-                      ),
-                      _Divider(),
-                      _LinkTile(
-                        icon: Icons.info_outline,
-                        title: l.footerImprint,
-                        subtitle: l.tmgSubtitle,
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) =>
-                                const ImpressumScreen(),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 28),
-
-                  // ── ABOUT ──
-                  _SectionLabel(label: l.aboutCapacifySection),
-                  const SizedBox(height: 10),
-
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: c.surface,
-                      borderRadius:
-                          BorderRadius.circular(10),
-                      border: Border.all(
-                          color: c.border),
-                    ),
-                    child: Column(
-                      crossAxisAlignment:
-                          CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              width: 40,
-                              height: 40,
-                              decoration: BoxDecoration(
-                                color: AppColors.primary,
-                                borderRadius:
-                                    BorderRadius.circular(
-                                        8),
-                              ),
-                              child: const Center(
-                                child: Text(
-                                  'C',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 22,
-                                    fontWeight:
-                                        FontWeight.w900,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Column(
-                              crossAxisAlignment:
-                                  CrossAxisAlignment
-                                      .start,
-                              children: [
-                                Text(
-                                  'Capacify',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight:
-                                        FontWeight.w900,
-                                    color: c.textPrimary,
-                                  ),
-                                ),
-                                Text(
-                                  l.liveCapacityExchangeTagline,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: c.textSecondary,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 14),
-                        Divider(color: c.border),
-                        const SizedBox(height: 10),
-                        Text(
-                          'Version 1.0.0 (MVP)',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: c.textSecondary,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '© 2026 Capacify.',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: c.textTertiary,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  const SizedBox(height: 28),
-
-                  // ── DEMO DATA ──
-                  _SectionLabel(label: l.developerSection),
-                  const SizedBox(height: 10),
-                  const _DemoDataSection(),
-
-                  const SizedBox(height: 28),
+                  SizedBox(height: isMobile ? 16 : 28),
 
                   // ── ACCOUNT ──
                   _SectionLabel(label: l.accountSectionCaps),
-                  const SizedBox(height: 10),
+                  SizedBox(height: isMobile ? 8 : 10),
 
                   _SettingsCard(
                     children: [
@@ -277,6 +250,9 @@ class _SettingsScreenState
                         onTap: _showChangePasswordDialog,
                       ),
                       _Divider(),
+                      // Pricing entry intentionally hidden for the free-contact
+                      // launch (no credits/payment). PricingScreen + credit infra
+                      // stay in the codebase, dormant, for a future paid revival.
                       _LinkTile(
                         icon: Icons.logout,
                         title: l.signOut,
@@ -296,7 +272,147 @@ class _SettingsScreenState
                     ],
                   ),
 
-                  const SizedBox(height: 36),
+                  SizedBox(height: isMobile ? 16 : 28),
+
+                  // ── ABOUT ──
+                  _SectionLabel(label: l.aboutCapacifySection),
+                  SizedBox(height: isMobile ? 8 : 10),
+
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: c.surface,
+                      borderRadius:
+                          BorderRadius.circular(10),
+                      border: Border.all(
+                          color: c.border),
+                    ),
+                    child: Column(
+                      crossAxisAlignment:
+                          CrossAxisAlignment.start,
+                      children: [
+                        InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const AboutScreen(),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              const CapacifySymbol(size: 40),
+                              const SizedBox(width: 12),
+                              Column(
+                                crossAxisAlignment:
+                                    CrossAxisAlignment
+                                        .start,
+                                children: [
+                                  Text(
+                                    'Capacify',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight:
+                                          FontWeight.w900,
+                                      color: c.textPrimary,
+                                    ),
+                                  ),
+                                  Text(
+                                    l.liveCapacityExchangeTagline,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: c.textSecondary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        SizedBox(height: isMobile ? 10 : 14),
+                        Divider(color: c.border),
+                        SizedBox(height: isMobile ? 8 : 10),
+                        Text(
+                          'Version 1.0.0 (MVP)',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: c.textSecondary,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '© 2026 Capacify.',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: c.textTertiary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // ── DEMO DATA (admins only) ──
+                  if (ref.watch(isAdminProvider).valueOrNull == true) ...[
+                    SizedBox(height: isMobile ? 16 : 28),
+                    _SectionLabel(label: l.developerSection),
+                    SizedBox(height: isMobile ? 8 : 10),
+                    const _DemoDataSection(),
+                  ],
+
+                  SizedBox(height: isMobile ? 16 : 28),
+
+                  // ── DATENSCHUTZ & RECHTLICHES (privacy controls + legal docs) ──
+                  _SectionLabel(label: l.privacyLegalSectionCaps),
+                  SizedBox(height: isMobile ? 8 : 10),
+
+                  _SettingsCard(
+                    children: [
+                      // Analytics consent as a real switch (clearer than a tap-to-toggle row).
+                      _ToggleTile(
+                        icon: Icons.analytics_outlined,
+                        title: l.consentSettingsTitle,
+                        subtitle: l.consentSettingsSubtitle,
+                        value: ref.watch(consentProvider) == ConsentState.granted,
+                        onChanged: (v) {
+                          final n = ref.read(consentProvider.notifier);
+                          v ? n.grant() : n.deny();
+                        },
+                      ),
+                      _Divider(),
+                      _LinkTile(
+                        icon: Icons.security_outlined,
+                        title: l.privacyLabel,
+                        subtitle: l.gdprSubtitle,
+                        onTap: () => Navigator.push(context,
+                            MaterialPageRoute(builder: (_) => const DatenschutzScreen())),
+                      ),
+                      _Divider(),
+                      _LinkTile(
+                        icon: Icons.description_outlined,
+                        title: l.agbLabel,
+                        subtitle: l.agbFullName,
+                        onTap: () => Navigator.push(context,
+                            MaterialPageRoute(builder: (_) => const AGBScreen())),
+                      ),
+                      _Divider(),
+                      _LinkTile(
+                        icon: Icons.info_outline,
+                        title: l.footerImprint,
+                        subtitle: l.tmgSubtitle,
+                        onTap: () => Navigator.push(context,
+                            MaterialPageRoute(builder: (_) => const ImpressumScreen())),
+                      ),
+                      _Divider(),
+                      _LinkTile(
+                        icon: Icons.download_outlined,
+                        title: l.exportDataTitle,
+                        subtitle: l.exportDataSubtitle,
+                        onTap: _exportData,
+                      ),
+                    ],
+                  ),
+
+                  SizedBox(height: isMobile ? 20 : 32),
 
                   // Disclaimer
                   Center(
@@ -312,7 +428,27 @@ class _SettingsScreenState
                     ),
                   ),
 
-                  const SizedBox(height: 20),
+                  SizedBox(height: isMobile ? 10 : 14),
+
+                  // Danger action — deliberately de-emphasised (small, muted text
+                  // link at the very bottom) so account deletion isn't a prominent
+                  // button that gets hit by accident. The confirm dialog guards it.
+                  Center(
+                    child: TextButton.icon(
+                      onPressed: _confirmDeleteAccount,
+                      icon: Icon(Icons.delete_outline, size: 15, color: c.textTertiary),
+                      label: Text(
+                        l.deleteAccountTitle,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: c.textTertiary,
+                          decoration: TextDecoration.underline,
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  SizedBox(height: isMobile ? 12 : 20),
                 ],
               ),
             ),

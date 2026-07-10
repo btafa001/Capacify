@@ -7,13 +7,24 @@ import '../../../core/models/capacity_model.dart';
 import '../../../core/models/report_model.dart';
 import '../../../core/services/capacity_provider.dart';
 import '../../../core/services/auth_provider.dart';
+import '../../../core/services/company_provider.dart';
 import '../../../core/services/location_service.dart';
 import '../../../core/services/report_provider.dart';
 import '../../../core/localization/app_localizations.dart';
-import '../../../shared/widgets/star_rating.dart';
+import '../../../core/models/saved_search_model.dart';
+import '../../../core/services/saved_search_service.dart';
+import '../../../shared/widgets/dot_grid_painter.dart';
+import '../../../shared/widgets/interactions.dart';
+import '../../../shared/widgets/trade_pill_dropdown.dart';
+import '../../../shared/widgets/app_states.dart';
 import 'capacity_detail_screen.dart';
+import '../../../core/services/analytics_service.dart';
+import '../widgets/interest_modal.dart';
 
 final _viewedPosts = <String>{};
+// Cards that have already played their entry fade — so they never re-animate on
+// scroll (re-animation reads as cheap). Session-scoped, like _viewedPosts.
+final _entryAnimated = <String>{};
 
 class LiveCapacityFeedScreen extends ConsumerStatefulWidget {
   final String? userPostalCode;
@@ -34,8 +45,9 @@ class _LiveCapacityFeedScreenState
     extends ConsumerState<LiveCapacityFeedScreen> {
   static const _pageSize = 20;
 
-  String _selectedTrade = 'Alle';
+  List<String> _selectedTrades = [];
   String _selectedWhen = 'Alle';
+  String _selectedCrew = 'Alle'; // 'Alle' = any; otherwise a minimum crew size
   CapacityType? _typeFilter;
   bool _liveFilter = false;
   String _searchText = '';
@@ -56,6 +68,7 @@ class _LiveCapacityFeedScreenState
   @override
   void initState() {
     super.initState();
+    AnalyticsService.logScreenView('LiveCapacityFeed');
     _typeFilter = widget.initialTypeFilter;
   }
 
@@ -73,18 +86,69 @@ class _LiveCapacityFeedScreenState
     super.dispose();
   }
 
+  Future<void> _saveCurrentSearch() async {
+    final l = AppLocalizations.of(context);
+    final uid = ref.read(authStateProvider).valueOrNull?.uid;
+    if (uid == null) return;
+    final crewMin = _selectedCrew == 'Alle' ? 0 : (int.tryParse(_selectedCrew) ?? 0);
+    final type = _typeFilter == CapacityType.offer
+        ? 'offer'
+        : _typeFilter == CapacityType.need
+            ? 'need'
+            : 'all';
+    try {
+      await ref.read(savedSearchServiceProvider).save(SavedSearchModel(
+            id: '',
+            ownerId: uid,
+            trades: _selectedTrades,
+            when: _selectedWhen,
+            crewMin: crewMin,
+            type: type,
+          ));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(l.searchSavedSnackbar), backgroundColor: AppColors.live));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(l.errorWithMessage(e)), backgroundColor: AppColors.error));
+      }
+    }
+  }
+
+  void _applySearch(SavedSearchModel s) {
+    _searchController.clear();
+    _setFilter(() {
+      _selectedTrades = List<String>.from(s.trades);
+      _selectedWhen = s.when;
+      _selectedCrew = s.crewMin == 0 ? 'Alle' : '${s.crewMin}';
+      _typeFilter = s.type == 'offer'
+          ? CapacityType.offer
+          : s.type == 'need'
+              ? CapacityType.need
+              : null;
+      _searchText = '';
+      _liveFilter = false;
+    });
+  }
+
   List<CapacityModel> _filterAndSort(List<CapacityModel> capacities, AppLocalizations l) {
     var filtered = capacities.where((c) {
       if (_liveFilter && !c.isLive) return false;
       if (_typeFilter != null && c.type != _typeFilter) return false;
-      if (_selectedTrade != 'Alle' && c.trade != _selectedTrade) return false;
+      if (_selectedTrades.isNotEmpty && !_selectedTrades.contains(c.trade)) return false;
       if (_selectedWhen == 'NOW' && c.availabilityType != AvailabilityType.now) return false;
       if (_selectedWhen == 'WEEK' && c.availabilityType != AvailabilityType.thisWeek) return false;
       if (_selectedWhen == 'NEXT' && c.availabilityType != AvailabilityType.nextWeek) return false;
+      if (_selectedCrew != 'Alle') {
+        final min = int.tryParse(_selectedCrew) ?? 0;
+        if (c.workerCount < min) return false;
+      }
       if (_searchText.isNotEmpty) {
         final q = _searchText.toLowerCase();
+        // Search matches only anonymized match fields — never identity.
         return c.title.toLowerCase().contains(q) ||
-            c.companyName.toLowerCase().contains(q) ||
             c.location.toLowerCase().contains(q) ||
             c.trade.toLowerCase().contains(q) ||
             l.tradeName(c.trade).toLowerCase().contains(q);
@@ -116,6 +180,13 @@ class _LiveCapacityFeedScreenState
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
     final capacitiesAsync = ref.watch(capacitiesProvider);
+    // Viewer's own trades → drives the "Passt zu Ihrem Profil" relevance badge.
+    final myUid = ref.watch(authStateProvider).valueOrNull?.uid;
+    final viewerTrades = myUid == null
+        ? const <String>[]
+        : (ref.watch(myCompanyProvider(myUid)).valueOrNull?.trades ?? const <String>[]);
+    final isMobile = MediaQuery.of(context).size.width < 768;
+    final tabGap = SizedBox(width: isMobile ? 4 : 8);
 
     return Column(
       children: [
@@ -123,7 +194,9 @@ class _LiveCapacityFeedScreenState
         Container(
           color: c.surface,
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-          child: Row(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
             children: [
               _TypeTab(
                 label: l.tabAll,
@@ -132,7 +205,7 @@ class _LiveCapacityFeedScreenState
                 color: c.textPrimary,
                 onTap: () => _setFilter(() { _typeFilter = null; _liveFilter = false; }),
               ),
-              const SizedBox(width: 8),
+              tabGap,
               _TypeTab(
                 label: l.availableLabel,
                 count: capacitiesAsync.maybeWhen(
@@ -143,7 +216,7 @@ class _LiveCapacityFeedScreenState
                 color: AppColors.offerColor,
                 onTap: () => _setFilter(() { _typeFilter = CapacityType.offer; _liveFilter = false; }),
               ),
-              const SizedBox(width: 8),
+              tabGap,
               _TypeTab(
                 label: l.wantedLabel,
                 count: capacitiesAsync.maybeWhen(
@@ -154,7 +227,7 @@ class _LiveCapacityFeedScreenState
                 color: AppColors.needColor,
                 onTap: () => _setFilter(() { _typeFilter = CapacityType.need; _liveFilter = false; }),
               ),
-              const SizedBox(width: 8),
+              tabGap,
               _TypeTab(
                 label: l.liveLabel,
                 count: capacitiesAsync.maybeWhen(
@@ -166,6 +239,7 @@ class _LiveCapacityFeedScreenState
                 onTap: () => _setFilter(() { _typeFilter = null; _liveFilter = true; }),
               ),
             ],
+            ),
           ),
         ),
 
@@ -215,22 +289,32 @@ class _LiveCapacityFeedScreenState
                     ),
                     const SizedBox(width: 8),
                     _PillDropdown(
-                      icon: Icons.build_outlined,
-                      label: _selectedTrade == 'Alle' ? l.tradeFilterLabel : l.tradeName(_selectedTrade),
-                      options: const [
-                        'Alle', 'Rohbau', 'Trockenbau', 'Elektro', 'Sanitär & Heizung',
-                        'Dach', 'Fassade', 'Tiefbau', 'Stahl', 'Beton', 'HVAC', 'Lieferant',
-                      ],
-                      labels: [
-                        l.tradeAll, l.tradeName('Rohbau'), l.tradeName('Trockenbau'), l.tradeName('Elektro'), l.tradeName('Sanitär & Heizung'),
-                        l.tradeName('Dach'), l.tradeName('Fassade'), l.tradeName('Tiefbau'), l.tradeName('Stahl'), l.tradeName('Beton'), l.tradeName('HVAC'), l.tradeName('Lieferant'),
-                      ],
-                      selected: _selectedTrade,
-                      onChanged: (v) => _setFilter(() => _selectedTrade = v),
+                      icon: Icons.groups_outlined,
+                      label: _selectedCrew == 'Alle'
+                          ? l.crewLabel
+                          : '${_selectedCrew}+',
+                      options: const ['Alle', '1', '3', '5', '10'],
+                      labels: [l.crewAny, l.crew1plus, l.crew3plus, l.crew5plus, l.crew10plus],
+                      selected: _selectedCrew,
+                      onChanged: (v) => _setFilter(() => _selectedCrew = v),
+                    ),
+                    const SizedBox(width: 8),
+                    TradePillDropdown(
+                      selected: _selectedTrades,
+                      onChanged: (v) => _setFilter(() => _selectedTrades = v),
+                    ),
+                    const SizedBox(width: 8),
+                    _PillToggle(
+                      label: l.saveSearchLabel,
+                      icon: Icons.bookmark_add_outlined,
+                      isActive: false,
+                      onTap: _saveCurrentSearch,
                     ),
                   ],
                 ),
               ),
+              // Saved searches — one-tap re-filter (the retention seed).
+              _SavedSearchesRow(onApply: _applySearch),
             ],
           ),
         ),
@@ -278,7 +362,7 @@ class _LiveCapacityFeedScreenState
                 children: [
                   // Dot grid background
                   Positioned.fill(
-                    child: CustomPaint(painter: _FeedDotGrid()),
+                    child: CustomPaint(painter: DotGridPainter(color: c.textPrimary)),
                   ),
                   // Feed list — full-width so scroll works anywhere; constraint lives on each item
                   RefreshIndicator(
@@ -301,15 +385,21 @@ class _LiveCapacityFeedScreenState
                             ),
                           );
                         }
+                        final cap = visible[index];
+                        Widget card = _LiveCapacityCard(
+                          capacity: cap,
+                          userPostalCode: widget.userPostalCode,
+                          matchesProfile: viewerTrades.contains(cap.trade),
+                        );
+                        // Fade + rise once per card id (Set.add is true only the
+                        // first time) — new posts feel alive, scroll stays calm.
+                        if (_entryAnimated.add(cap.id)) card = EntryFade(child: card);
                         return Center(
                           child: ConstrainedBox(
                             constraints: const BoxConstraints(maxWidth: 920),
                             child: Padding(
                               padding: const EdgeInsets.fromLTRB(24, 0, 24, 12),
-                              child: _LiveCapacityCard(
-                                capacity: visible[index],
-                                userPostalCode: widget.userPostalCode,
-                              ),
+                              child: card,
                             ),
                           ),
                         );
@@ -340,11 +430,10 @@ class _LiveCapacityFeedScreenState
                 ],
               );
             },
-            loading: () => const Center(
-              child: CircularProgressIndicator(color: AppColors.primary),
-            ),
-            error: (e, _) => Center(
-              child: Text(l.errorWithMessage(e), style: const TextStyle(color: AppColors.error)),
+            loading: () => const FeedSkeleton(),
+            error: (e, _) => AppErrorState(
+              error: e,
+              onRetry: () => ref.refresh(capacitiesProvider),
             ),
           ),
         ),
@@ -353,26 +442,6 @@ class _LiveCapacityFeedScreenState
   }
 }
 
-// ─── DOT GRID BACKGROUND ────────────────────────────
-
-class _FeedDotGrid extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white.withOpacity(0.09)
-      ..strokeCap = StrokeCap.round;
-    const spacing = 28.0;
-    const radius = 2.0;
-    for (double x = spacing; x < size.width; x += spacing) {
-      for (double y = spacing; y < size.height; y += spacing) {
-        canvas.drawCircle(Offset(x, y), radius, paint);
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter old) => false;
-}
 
 // ─── TYPE TAB ───────────────────────────────────────
 
@@ -394,10 +463,11 @@ class _TypeTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final isMobile = MediaQuery.of(context).size.width < 768;
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+        padding: EdgeInsets.symmetric(horizontal: isMobile ? 10 : 18, vertical: isMobile ? 8 : 12),
         decoration: BoxDecoration(
           color: isActive ? color.withOpacity(0.12) : Colors.transparent,
           borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
@@ -411,15 +481,15 @@ class _TypeTab extends StatelessWidget {
             Text(
               label,
               style: TextStyle(
-                fontSize: 14,
+                fontSize: isMobile ? 12 : 14,
                 fontWeight: isActive ? FontWeight.w900 : FontWeight.normal,
                 color: isActive ? color : c.textSecondary,
                 letterSpacing: 0.5,
               ),
             ),
-            const SizedBox(width: 8),
+            SizedBox(width: isMobile ? 5 : 8),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+              padding: EdgeInsets.symmetric(horizontal: isMobile ? 5 : 7, vertical: isMobile ? 2 : 3),
               decoration: BoxDecoration(
                 color: isActive ? color.withOpacity(0.25) : c.border,
                 borderRadius: BorderRadius.circular(10),
@@ -427,7 +497,7 @@ class _TypeTab extends StatelessWidget {
               child: Text(
                 '$count',
                 style: TextStyle(
-                  fontSize: 12,
+                  fontSize: isMobile ? 10 : 12,
                   fontWeight: FontWeight.w700,
                   color: isActive ? color : c.textTertiary,
                 ),
@@ -515,31 +585,42 @@ class _PillDropdown extends StatelessWidget {
         showModalBottomSheet(
           context: context,
           backgroundColor: c.surface,
+          isScrollControlled: true,
           shape: const RoundedRectangleBorder(
             borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
           ),
-          builder: (ctx) => Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SizedBox(height: 12),
-              Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(color: c.border, borderRadius: BorderRadius.circular(2)),
-              ),
-              const SizedBox(height: 8),
-              ...List.generate(options.length, (i) => ListTile(
-                title: Text(labels[i], style: TextStyle(color: c.textPrimary, fontSize: 16)),
-                trailing: selected == options[i]
-                    ? const Icon(Icons.check, color: AppColors.primary)
-                    : null,
-                onTap: () {
-                  onChanged(options[i]);
-                  Navigator.pop(ctx);
-                },
-              )),
-              const SizedBox(height: 16),
-            ],
+          builder: (ctx) => ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.7),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 12),
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(color: c.border, borderRadius: BorderRadius.circular(2)),
+                ),
+                const SizedBox(height: 8),
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: List.generate(options.length, (i) => ListTile(
+                        title: Text(labels[i], style: TextStyle(color: c.textPrimary, fontSize: 16)),
+                        trailing: selected == options[i]
+                            ? const Icon(Icons.check, color: AppColors.primary)
+                            : null,
+                        onTap: () {
+                          onChanged(options[i]);
+                          Navigator.pop(ctx);
+                        },
+                      )),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+            ),
           ),
         );
       },
@@ -577,8 +658,9 @@ class _PillDropdown extends StatelessWidget {
 class _LiveCapacityCard extends ConsumerWidget {
   final CapacityModel capacity;
   final String? userPostalCode;
+  final bool matchesProfile;
 
-  const _LiveCapacityCard({required this.capacity, this.userPostalCode});
+  const _LiveCapacityCard({required this.capacity, this.userPostalCode, this.matchesProfile = false});
 
   void _openDetail(BuildContext context) {
     final size = MediaQuery.of(context).size;
@@ -623,11 +705,12 @@ class _LiveCapacityCard extends ConsumerWidget {
   void _showShareSheet(BuildContext context) {
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
+    final shareUrl = 'https://capacify-mvp.web.app/?capacity=${capacity.id}';
     final text =
         '${capacity.typeLabel(l)}: ${capacity.autoTitle(l)}\n'
         '📍 ${capacity.location} · ${capacity.availabilityLabel(l)}\n'
         '👥 ${capacity.workerCount} ${l.persons} · ${l.tradeName(capacity.trade)}\n\n'
-        '${l.shareFoundOnCapacify}\nhttps://capacify.de';
+        '${l.shareFoundOnCapacify}\n$shareUrl';
 
     showModalBottomSheet(
       context: context,
@@ -671,7 +754,11 @@ class _LiveCapacityCard extends ConsumerWidget {
                   color: const Color(0xFF0A66C2),
                   icon: Icons.work_outline,
                   onTap: () async {
-                    final url = Uri.parse('https://www.linkedin.com/shareArticle?mini=true&url=${Uri.encodeComponent('https://capacify.de')}&title=${Uri.encodeComponent(capacity.autoTitle(l))}');
+                    // LinkedIn retired the old shareArticle?title=/summary=
+                    // params years ago (anti-spam) — the current endpoint only
+                    // takes a url and derives the preview from that page's own
+                    // Open Graph tags.
+                    final url = Uri.parse('https://www.linkedin.com/sharing/share-offsite/?url=${Uri.encodeComponent(shareUrl)}');
                     try { await launchUrl(url); } catch (_) {}
                     if (ctx.mounted) Navigator.pop(ctx);
                   },
@@ -702,38 +789,10 @@ class _LiveCapacityCard extends ConsumerWidget {
     );
   }
 
-  Future<void> _showInterest(BuildContext context) async {
-    final l = AppLocalizations.of(context);
-    if (capacity.companyEmail.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(l.noContactDataSnackbar),
-          backgroundColor: AppColors.error,
-        ),
-      );
-      return;
-    }
-    final uri = Uri(
-      scheme: 'mailto',
-      path: capacity.companyEmail,
-      queryParameters: {
-        'subject': l.interestEmailSubject(capacity.autoTitle(l)),
-        'body': l.interestEmailBody(capacity.autoTitle(l)),
-      },
-    );
-    try {
-      await launchUrl(uri);
-    } catch (_) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(l.mailAppError),
-            backgroundColor: AppColors.error,
-          ),
-        );
-      }
-    }
-  }
+  // The gated step — opens the "Interesse senden" confirmation modal, which
+  // creates a contact request. No contact/identity is ever revealed here.
+  Future<void> _sendInterest(BuildContext context, WidgetRef ref) =>
+      showInterestModal(context: context, ref: ref, capacity: capacity);
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -756,38 +815,50 @@ class _LiveCapacityCard extends ConsumerWidget {
     );
     final isFavorited = favoriteIds.contains(capacity.id);
 
-    final currentUserId = ref.watch(authStateProvider).maybeWhen(
-      data: (u) => u?.uid,
-      orElse: () => null,
-    );
-    final isOwner = currentUserId != null && currentUserId == capacity.companyId;
+    // The feed is anonymous, so a card can't (cheaply) tell whose post it is —
+    // owners manage their own posts from My Listings, not the feed. Every card
+    // offers "Kontakt anfragen"; requesting your own post is harmless (the
+    // founder simply ignores it).
+    const isOwner = false;
 
+    // Availability colour coding: green = sofort, yellow = ab Datum
+    // (this/next week), blue = nach Projektende (custom start).
     Color availabilityColor;
     switch (capacity.availabilityType) {
       case AvailabilityType.now:
         availabilityColor = AppColors.live;
         break;
       case AvailabilityType.thisWeek:
+      case AvailabilityType.nextWeek:
         availabilityColor = AppColors.accent;
         break;
-      default:
-        availabilityColor = c.textSecondary;
+      case AvailabilityType.custom:
+        availabilityColor = AppColors.distance;
         break;
     }
 
-    return GestureDetector(
+    return HoverLift(
       onTap: () {
         _viewedPosts.add(capacity.id);
         _openDetail(context);
       },
-      child: Container(
+      builder: (context, hovered) {
+        return AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
         decoration: BoxDecoration(
           color: isViewed ? c.surface.withOpacity(0.75) : c.surface,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: c.border, width: 1.5),
-          boxShadow: capacity.isLive
-              ? [BoxShadow(color: accentColor.withOpacity(0.10), blurRadius: 14, spreadRadius: 0)]
-              : null,
+          // Border + shadow intensify on hover — the card reads as selectable.
+          border: Border.all(
+            color: hovered ? accentColor.withOpacity(0.55) : c.border,
+            width: 1.5,
+          ),
+          boxShadow: hovered
+              ? [BoxShadow(color: accentColor.withOpacity(0.16), blurRadius: 22, spreadRadius: 0, offset: const Offset(0, 6))]
+              : (capacity.isLive
+                  ? [BoxShadow(color: accentColor.withOpacity(0.10), blurRadius: 14, spreadRadius: 0)]
+                  : null),
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(12),
@@ -808,86 +879,80 @@ class _LiveCapacityCard extends ConsumerWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            // Top row: type badge + live/new + negotiation + distance + time
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.center,
+                            // Top row: status badges (wrap — never overflow on
+                            // mobile) + a meta line below (distance/freshness).
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 6,
+                              crossAxisAlignment: WrapCrossAlignment.center,
                               children: [
-                                // Type badge
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                // Type badge — the one badge that keeps full
+                                // color (offer/need is the core signal) and
+                                // brightens slightly on card hover.
+                                AnimatedContainer(
+                                  duration: const Duration(milliseconds: 180),
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4.5),
                                   decoration: BoxDecoration(
-                                    color: accentColor.withOpacity(0.15),
+                                    color: accentColor.withOpacity(hovered ? 0.24 : 0.15),
                                     borderRadius: BorderRadius.circular(5),
-                                    border: Border.all(color: accentColor.withOpacity(0.5), width: 1.5),
+                                    border: Border.all(color: accentColor.withOpacity(hovered ? 0.75 : 0.5), width: 1.2),
                                   ),
                                   child: Text(
                                     capacity.typeLabel(l),
-                                    style: TextStyle(
-                                      color: accentColor,
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w900,
-                                      letterSpacing: 0.8,
-                                    ),
+                                    style: TextStyle(color: accentColor, fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 0.3),
                                   ),
                                 ),
-                                const SizedBox(width: 6),
-                                // LIVE badge with glow
+                                // Relevance — this post is in a trade the viewer
+                                // works. Neutral tone: informational, not urgent.
+                                if (matchesProfile)
+                                  _FeedBadge(
+                                    label: l.matchesProfileBadge,
+                                    icon: Icons.person_pin_circle_outlined,
+                                    color: AppColors.primary,
+                                    filled: false,
+                                  ),
+                                // LIVE keeps color — real-time activity is the
+                                // single most important freshness signal.
                                 if (capacity.isLive)
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                                    decoration: BoxDecoration(
-                                      color: AppColors.live.withOpacity(0.15),
-                                      borderRadius: BorderRadius.circular(5),
-                                      border: Border.all(color: AppColors.live, width: 1.5),
-                                      boxShadow: [
-                                        BoxShadow(color: AppColors.live.withOpacity(0.3), blurRadius: 8),
-                                      ],
-                                    ),
-                                    child: const Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(Icons.circle, size: 7, color: AppColors.live),
-                                        SizedBox(width: 4),
-                                        Text('LIVE', style: TextStyle(color: AppColors.live, fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 0.5)),
-                                      ],
-                                    ),
-                                  )
+                                  _FeedBadge(label: l.liveLabel, icon: Icons.circle, iconSize: 7, color: AppColors.live)
                                 else if (capacity.isNew)
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                                    decoration: BoxDecoration(
-                                      color: AppColors.accent.withOpacity(0.15),
-                                      borderRadius: BorderRadius.circular(5),
-                                    ),
-                                    child: Text(l.newBadge, style: const TextStyle(color: AppColors.accent, fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 0.5)),
-                                  ),
+                                  _FeedBadge(label: l.newBadge, color: AppColors.accent, filled: false),
                                 if (capacity.isInProgress)
-                                  Padding(
-                                    padding: const EdgeInsets.only(left: 6),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
-                                      decoration: BoxDecoration(
-                                        color: AppColors.distance.withOpacity(0.12),
-                                        borderRadius: BorderRadius.circular(5),
-                                      ),
-                                      child: Text(
-                                        capacity.statusLabel(l),
-                                        style: const TextStyle(color: AppColors.distance, fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 0.3),
-                                      ),
-                                    ),
+                                  _FeedBadge(label: capacity.statusLabel(l), color: AppColors.distance, filled: false),
+                                // Perishability — red only once truly urgent
+                                // (≤2 days); otherwise a neutral countdown.
+                                if (capacity.daysLeft != null && capacity.daysLeft! <= 7)
+                                  _FeedBadge(
+                                    label: l.daysLeftLabel(capacity.daysLeft!),
+                                    icon: Icons.timelapse_outlined,
+                                    color: AppColors.urgent,
+                                    filled: capacity.daysLeft! <= 2,
                                   ),
-                                const Spacer(),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            // Meta line: distance / freshness / seen.
+                            Row(
+                              children: [
                                 if (distance != null) ...[
                                   Text(
                                     '${distance.round()} km',
-                                    style: const TextStyle(color: AppColors.distance, fontSize: 14, fontWeight: FontWeight.w900),
+                                    style: const TextStyle(color: AppColors.distance, fontSize: 13, fontWeight: FontWeight.w800),
                                   ),
                                   const SizedBox(width: 10),
                                 ],
-                                Text(
-                                  capacity.timePostedLabel(l),
-                                  style: TextStyle(color: c.textTertiary, fontSize: 14),
-                                ),
+                                // "Heute bestätigt" beats "aktualisiert" — it's
+                                // the poster actively vouching the crew is free.
+                                if (capacity.confirmedToday) ...[
+                                  const Icon(Icons.verified_outlined, size: 13, color: AppColors.live),
+                                  const SizedBox(width: 3),
+                                  Text(l.confirmedTodayLabel,
+                                      style: const TextStyle(color: AppColors.live, fontSize: 11.5, fontWeight: FontWeight.w800)),
+                                ] else
+                                  Text(
+                                    capacity.timePostedLabel(l),
+                                    style: TextStyle(color: c.textTertiary, fontSize: 12.5),
+                                  ),
                                 if (isViewed) ...[
                                   const SizedBox(width: 6),
                                   Text(l.seenLabel, style: TextStyle(color: c.textTertiary, fontSize: 10)),
@@ -895,43 +960,13 @@ class _LiveCapacityCard extends ConsumerWidget {
                               ],
                             ),
 
-                            const SizedBox(height: 12),
+                            const SizedBox(height: 8),
 
-                            // Company name + rating + optional verified badge
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    capacity.companyName,
-                                    style: TextStyle(fontSize: 13, color: c.textSecondary, fontWeight: FontWeight.w600),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                CompanyRatingBadge(companyId: capacity.companyId),
-                                if (capacity.companyVerified) ...[
-                                  const SizedBox(width: 6),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                                    decoration: BoxDecoration(
-                                      color: AppColors.live.withOpacity(0.10),
-                                      borderRadius: BorderRadius.circular(4),
-                                      border: Border.all(color: AppColors.live.withOpacity(0.30)),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Icon(Icons.verified, size: 11, color: AppColors.live),
-                                        const SizedBox(width: 3),
-                                        Text(l.verifiedLabel, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w900, color: AppColors.live, letterSpacing: 0.3)),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
-                            const SizedBox(height: 3),
-                            // Title — biggest and boldest
+                            // No company name, rating, or verified badge — the
+                            // post is anonymous. Identity is only revealed
+                            // through a granted contact request.
+
+                            // Title — trade-led, biggest and boldest
                             Text(
                               capacity.autoTitle(l),
                               style: TextStyle(
@@ -944,13 +979,47 @@ class _LiveCapacityCard extends ConsumerWidget {
                               overflow: TextOverflow.ellipsis,
                             ),
 
-                            // Description snippet
+                            // Trust line — aggregate, non-identifying (no name):
+                            // ✓ Verifiziert · ⭐ rating. The at-a-glance trust
+                            // signal, shown only when the poster actually has it.
+                            // (Subtitle removed — crew·district is already in the
+                            // spec chips below; no duplication.)
+                            if (capacity.posterVerified || capacity.posterRatingCount > 0) ...[
+                              const SizedBox(height: 7),
+                              Row(
+                                children: [
+                                  if (capacity.posterVerified) ...[
+                                    const Icon(Icons.verified, size: 14, color: AppColors.live),
+                                    const SizedBox(width: 4),
+                                    Text(l.verifiedTitleCase,
+                                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: AppColors.live)),
+                                  ],
+                                  if (capacity.posterVerified && capacity.posterRatingCount > 0) ...[
+                                    const SizedBox(width: 8),
+                                    Container(width: 3, height: 3, decoration: BoxDecoration(color: c.textTertiary, shape: BoxShape.circle)),
+                                    const SizedBox(width: 8),
+                                  ],
+                                  if (capacity.posterRatingCount > 0) ...[
+                                    const Icon(Icons.star_rounded, size: 15, color: AppColors.accent),
+                                    const SizedBox(width: 3),
+                                    Text(capacity.posterRating.toStringAsFixed(1),
+                                        style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800, color: c.textPrimary)),
+                                    const SizedBox(width: 3),
+                                    Text('(${capacity.posterRatingCount})',
+                                        style: TextStyle(fontSize: 12, color: c.textTertiary)),
+                                  ],
+                                ],
+                              ),
+                            ],
+
+                            // Description — trimmed to one line (secondary info;
+                            // the full text lives in the detail view).
                             if (capacity.description.isNotEmpty) ...[
                               const SizedBox(height: 8),
                               Text(
                                 capacity.description,
-                                style: TextStyle(fontSize: 14, color: c.textSecondary, height: 1.5),
-                                maxLines: 2,
+                                style: TextStyle(fontSize: 13.5, color: c.textSecondary, height: 1.45),
+                                maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ],
@@ -985,6 +1054,15 @@ class _LiveCapacityCard extends ConsumerWidget {
                                 ),
                                 const SizedBox(width: 4),
                                 Text('${capacity.favoriteCount}', style: TextStyle(fontSize: 13, color: c.textTertiary, fontWeight: FontWeight.w600)),
+                                // Social proof — real interest count (Objective 6),
+                                // aggregate + non-identifying. Only when > 0.
+                                if (capacity.interestCount > 0) ...[
+                                  const SizedBox(width: 12),
+                                  const Icon(Icons.handshake_outlined, size: 15, color: AppColors.live),
+                                  const SizedBox(width: 4),
+                                  Text(l.interestedCountLabel(capacity.interestCount),
+                                      style: const TextStyle(fontSize: 13, color: AppColors.live, fontWeight: FontWeight.w700)),
+                                ],
                               ],
                             ),
                           ],
@@ -998,26 +1076,25 @@ class _LiveCapacityCard extends ConsumerWidget {
                         ),
                         child: Row(
                           children: [
-                            // Interesse bekunden — primary CTA (non-owner, active only)
+                            // Interesse senden — the single gated action
                             if (!isOwner && !capacity.isClosed && !capacity.isCancelled)
                               Expanded(
-                                child: Material(
-                                  color: accentColor.withOpacity(0.06),
-                                  child: InkWell(
-                                    onTap: () => _showInterest(context),
-                                    child: Padding(
-                                      padding: const EdgeInsets.symmetric(vertical: 13),
-                                      child: Row(
-                                        mainAxisAlignment: MainAxisAlignment.center,
-                                        children: [
-                                          Icon(Icons.handshake_outlined, size: 16, color: accentColor),
-                                          const SizedBox(width: 7),
-                                          Text(
-                                            l.expressInterest,
-                                            style: TextStyle(fontSize: 13, color: accentColor, fontWeight: FontWeight.w700),
-                                          ),
-                                        ],
-                                      ),
+                                child: PressableButton(
+                                  onTap: () => _sendInterest(context, ref),
+                                  builder: (context, hov, pressed) => AnimatedContainer(
+                                    duration: const Duration(milliseconds: 140),
+                                    color: accentColor.withOpacity(hov ? 0.14 : 0.06),
+                                    padding: const EdgeInsets.symmetric(vertical: 13),
+                                    child: Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Icon(Icons.handshake_outlined, size: 16, color: accentColor),
+                                        const SizedBox(width: 7),
+                                        Text(
+                                          l.sendInterestButton,
+                                          style: TextStyle(fontSize: 13, color: accentColor, fontWeight: FontWeight.w800),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),
@@ -1088,12 +1165,60 @@ class _LiveCapacityCard extends ConsumerWidget {
             ),
           ),
         ),
-      ),
+        );
+      },
     );
   }
 }
 
 // ─── INFO CHIP ──────────────────────────────────────
+
+// ─── STATUS BADGE (standardized size, reduced color palette) ────────────────
+//
+// One shared spec for every status badge in the card's top row (type, match,
+// live/new, in-progress, perishability). `filled: true` reserves actual color
+// for the handful of signals that matter most (offer/need, LIVE, ≤2-days-left
+// urgency); everything else renders as a neutral, same-sized badge — so the
+// card reads calmer without losing information.
+class _FeedBadge extends StatelessWidget {
+  final String label;
+  final IconData? icon;
+  final double iconSize;
+  final Color color;
+  final bool filled;
+
+  const _FeedBadge({
+    required this.label,
+    this.icon,
+    this.iconSize = 11,
+    required this.color,
+    this.filled = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final fg = filled ? color : c.textSecondary;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4.5),
+      decoration: BoxDecoration(
+        color: filled ? color.withOpacity(0.15) : c.surfaceVariant,
+        borderRadius: BorderRadius.circular(5),
+        border: filled ? Border.all(color: color.withOpacity(0.5), width: 1.2) : null,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(icon, size: iconSize, color: fg),
+            const SizedBox(width: 4),
+          ],
+          Text(label, style: TextStyle(color: fg, fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 0.3)),
+        ],
+      ),
+    );
+  }
+}
 
 class _InfoChip extends StatelessWidget {
   final IconData icon;
@@ -1104,19 +1229,21 @@ class _InfoChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // The 4 spec chips (Trade · Team · Location · Availability) are the card's
+    // primary scan row — sized a touch larger/stronger than metadata.
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6.5),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(5),
-        border: Border.all(color: color.withOpacity(0.2)),
+        color: color.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withOpacity(0.28)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 13, color: color),
-          const SizedBox(width: 5),
-          Text(label, style: TextStyle(fontSize: 13, color: color, fontWeight: FontWeight.w700)),
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 6),
+          Text(label, style: TextStyle(fontSize: 13.5, color: color, fontWeight: FontWeight.w800)),
         ],
       ),
     );
@@ -1245,8 +1372,11 @@ void _showReportDialog(BuildContext context, WidgetRef ref, CapacityModel capaci
                                   await ref.read(reportServiceProvider).submitReport(
                                     capacityId: capacity.id,
                                     capacityTitle: capacity.autoTitle(l),
-                                    companyId: capacity.companyId,
-                                    companyName: capacity.companyName,
+                                    // Post is anonymous — the reporter doesn't
+                                    // know the company; admin resolves it from
+                                    // capacityOwners via capacityId.
+                                    companyId: '',
+                                    companyName: '',
                                     reporterId: user.uid,
                                     reason: selected!,
                                   );
@@ -1282,6 +1412,83 @@ void _showReportDialog(BuildContext context, WidgetRef ref, CapacityModel capaci
       );
     },
   );
+}
+
+// ─── SAVED SEARCHES ROW ─────────────────────────────
+
+class _SavedSearchesRow extends ConsumerWidget {
+  final void Function(SavedSearchModel) onApply;
+  const _SavedSearchesRow({required this.onApply});
+
+  String _label(SavedSearchModel s, AppLocalizations l) {
+    final parts = <String>[];
+    parts.add(s.trades.isNotEmpty
+        ? s.trades.map((t) => l.tradeName(t)).join(', ')
+        : l.savedAnyTradesLabel);
+    if (s.crewMin > 0) parts.add('${s.crewMin}+');
+    if (s.when != 'Alle') parts.add(s.when);
+    return parts.join(' · ');
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = AppColors.of(context);
+    final l = AppLocalizations.of(context);
+    final searches = ref.watch(mySavedSearchesProvider).valueOrNull ?? const [];
+    if (searches.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(children: [
+          Icon(Icons.bookmark_outline, size: 15, color: c.textTertiary),
+          const SizedBox(width: 8),
+          for (final s in searches) ...[
+            _SavedChip(
+              label: _label(s, l),
+              onApply: () => onApply(s),
+              onDelete: () => ref.read(savedSearchServiceProvider).delete(s.id),
+            ),
+            const SizedBox(width: 6),
+          ],
+        ]),
+      ),
+    );
+  }
+}
+
+class _SavedChip extends StatelessWidget {
+  final String label;
+  final VoidCallback onApply;
+  final VoidCallback onDelete;
+  const _SavedChip({required this.label, required this.onApply, required this.onDelete});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    return InkWell(
+      onTap: onApply,
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(12, 7, 6, 7),
+        decoration: BoxDecoration(
+          color: AppColors.primary.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: AppColors.primary.withOpacity(0.25)),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text(label,
+              style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: AppColors.primary)),
+          const SizedBox(width: 4),
+          InkWell(
+            onTap: onDelete,
+            borderRadius: BorderRadius.circular(12),
+            child: Icon(Icons.close, size: 14, color: c.textTertiary),
+          ),
+        ]),
+      ),
+    );
+  }
 }
 
 class _LoadMoreButton extends StatelessWidget {

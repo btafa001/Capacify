@@ -1,42 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/models/company_model.dart';
 import '../../../core/services/auth_provider.dart';
 import '../../../core/services/company_provider.dart';
 import '../../../shared/widgets/custom_text_field.dart';
 import '../../../shared/widgets/star_rating.dart';
-import 'company_analytics_screen.dart';
+import '../../../shared/widgets/milestone.dart';
 import '../../../core/services/capacity_provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/utils/content_moderation.dart';
-
-const List<String> kTrades = [
-  'Generalunternehmer',
-  'Rohbau',
-  'Trockenbau',
-  'Elektro',
-  'Sanitär & Heizung',
-  'Dach',
-  'Fassade',
-  'Tiefbau',
-  'Architektur',
-  'Statik',
-  'Stahl',
-  'Beton',
-  'HVAC',
-  'Lieferant',
-];
-
-const List<String> kEmployees = [
-  '1-5',
-  '6-10',
-  '11-25',
-  '26-50',
-  '51-100',
-  '100+',
-];
+import '../../../core/utils/validators.dart';
+import '../../../core/services/analytics_service.dart';
+import '../../../core/constants/app_constants.dart';
 
 class CompanyProfileScreen extends ConsumerStatefulWidget {
   const CompanyProfileScreen({super.key});
@@ -49,29 +27,128 @@ class CompanyProfileScreen extends ConsumerStatefulWidget {
 class _CompanyProfileScreenState
     extends ConsumerState<CompanyProfileScreen> {
   final _formKey = GlobalKey<FormState>();
+  final _scrollController = ScrollController();
   final _nameController = TextEditingController();
   final _descriptionController = TextEditingController();
+  final _certificationsController = TextEditingController();
   final _websiteController = TextEditingController();
   final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
   final _addressController = TextEditingController();
-  final _cityController = TextEditingController();
+  final _cityController = TextEditingController(text: 'Hamburg');
   final _postalCodeController = TextEditingController();
+  final _vatNumberController = TextEditingController();
 
-  String _selectedTrade = kTrades[0];
-  String _selectedEmployees = kEmployees[0];
+  // Used to scroll a field into view when its validation fails — checked in
+  // this same top-to-bottom order so the first one found is the topmost.
+  final _nameFieldKey = GlobalKey<FormFieldState>();
+  final _tradesFieldKey = GlobalKey();
+  final _descriptionFieldKey = GlobalKey<FormFieldState>();
+  final _emailFieldKey = GlobalKey<FormFieldState>();
+  final _phoneFieldKey = GlobalKey<FormFieldState>();
+  final _cityFieldKey = GlobalKey<FormFieldState>();
+  final _postalCodeFieldKey = GlobalKey<FormFieldState>();
+  final _vatNumberFieldKey = GlobalKey<FormFieldState>();
+
+  List<String> _selectedTrades = [];
+  String _selectedEmployees = kEmployeeCounts[0];
   List<String> _selectedServices = [];
   bool _isLoading = false;
   bool _isSaving = false;
+  bool _verifyingVat = false;
   String? _errorMessage;
   String? _successMessage;
   CompanyModel? _existingCompany;
 
+  // Instant verification via the server-side EU VIES check (verifyMyCompany
+  // Cloud Function). A valid VAT flips verificationStatus to 'verified' at
+  // once; invalid/unavailable leaves it for the founder's manual review.
+  Future<void> _runVatVerification() async {
+    final l = AppLocalizations.of(context);
+    if (_vatNumberController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l.verifyNeedVatFirst), backgroundColor: AppColors.error));
+      return;
+    }
+    setState(() => _verifyingVat = true);
+    try {
+      final res = await FirebaseFunctions.instanceFor(region: 'europe-west3')
+          .httpsCallable('verifyMyCompany')
+          .call();
+      final valid = (res.data?['valid'] as bool?) ?? false;
+      if (!mounted) return;
+      if (valid) {
+        await _loadExistingCompany();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(l.verifySuccessVies), backgroundColor: AppColors.live));
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(l.verifyInvalidVies), backgroundColor: AppColors.error));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(l.errorWithMessage(e)), backgroundColor: AppColors.error));
+      }
+    } finally {
+      if (mounted) setState(() => _verifyingVat = false);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    AnalyticsService.logScreenView('CompanyProfile');
     _loadExistingCompany();
+    // Rebuild on any field change so the completeness meter AND the Save button's
+    // enabled/disabled state (dirty tracking, see _snapshot) stay current.
+    for (final controller in [
+      _nameController,
+      _descriptionController,
+      _certificationsController,
+      _websiteController,
+      _emailController,
+      _phoneController,
+      _addressController,
+      _cityController,
+      _postalCodeController,
+      _vatNumberController,
+    ]) {
+      controller.addListener(() {
+        if (mounted) setState(() {});
+      });
+    }
   }
+
+  // Snapshot of every editable field — the Save button is disabled while the
+  // current form equals the last-saved snapshot (#2: disable after save until
+  // something changes).
+  String _savedSnapshot = '';
+  String _snapshot() => [
+        _nameController.text,
+        _descriptionController.text,
+        _certificationsController.text,
+        _websiteController.text,
+        _emailController.text,
+        _phoneController.text,
+        _addressController.text,
+        _cityController.text,
+        _postalCodeController.text,
+        _vatNumberController.text,
+        _selectedTrades.join(','),
+        _selectedEmployees,
+        _selectedServices.join(','),
+      ].join('|');
+
+  double get _completeness => CompanyModel.calculateCompleteness(
+        description: _descriptionController.text,
+        website: _websiteController.text,
+        phone: _phoneController.text,
+        address: _addressController.text,
+        trades: _selectedTrades,
+      );
 
   Future<void> _loadExistingCompany() async {
     setState(() => _isLoading = true);
@@ -86,27 +163,92 @@ class _CompanyProfileScreenState
         _existingCompany = company;
         _nameController.text = company.name;
         _descriptionController.text = company.description;
+        _certificationsController.text = company.certifications;
         _websiteController.text = company.website;
         _emailController.text = company.email;
         _phoneController.text = company.phone;
         _addressController.text = company.address;
-        _cityController.text = company.city;
+        if (company.city.isNotEmpty) _cityController.text = company.city;
         _postalCodeController.text = company.postalCode;
-        _selectedTrade = company.trade.isNotEmpty
-            ? company.trade
-            : kTrades[0];
-        _selectedEmployees = company.employees.isNotEmpty
+        _vatNumberController.text = company.vatNumber;
+        _selectedTrades = company.trades.where(kTrades.contains).take(2).toList();
+        _selectedEmployees = kEmployeeCounts.contains(company.employees)
             ? company.employees
-            : kEmployees[0];
+            : kEmployeeCounts[0];
         _selectedServices = List.from(company.services);
       }
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _savedSnapshot = _snapshot(); // baseline: nothing changed yet
+        });
+      }
     }
   }
 
+  void _scrollToField(GlobalKey key) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = key.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(
+          ctx,
+          alignment: 0.5,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeInOut,
+        );
+      }
+    });
+  }
+
+  /// Finds the first field (in on-screen order) whose validation failed and
+  /// scrolls it to the center of the screen — the orange border alone isn't
+  /// enough to notice if the field is off-screen when Save is pressed.
+  bool _scrollToFirstInvalidField() {
+    for (final key in [
+      _nameFieldKey,
+      _descriptionFieldKey,
+      _emailFieldKey,
+      _phoneFieldKey,
+      _cityFieldKey,
+      _postalCodeFieldKey,
+      _vatNumberFieldKey,
+    ]) {
+      if (key.currentState?.hasError ?? false) {
+        _scrollToField(key);
+        return true;
+      }
+    }
+    return false;
+  }
+
   Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (!_formKey.currentState!.validate()) {
+      _scrollToFirstInvalidField();
+      return;
+    }
+    if (_selectedTrades.isEmpty) {
+      setState(() => _errorMessage = AppLocalizations.of(context).selectAtLeastOneTrade);
+      _scrollToField(_tradesFieldKey);
+      return;
+    }
+
+    // Rename cooldown (#policy): a company can change its name only every
+    // kNameChangeCooldownDays. Stamp lastNameChangeAt only when it actually
+    // changes; otherwise preserve the existing stamp.
+    final trimmedName = _nameController.text.trim();
+    DateTime? nameStamp = _existingCompany?.lastNameChangeAt;
+    if (_existingCompany != null && trimmedName != _existingCompany!.name) {
+      final last = _existingCompany!.lastNameChangeAt;
+      if (last != null &&
+          DateTime.now().difference(last).inDays < kNameChangeCooldownDays) {
+        setState(() => _errorMessage =
+            AppLocalizations.of(context).nameChangeCooldownError(kNameChangeCooldownDays));
+        _scrollToField(_tradesFieldKey);
+        return;
+      }
+      nameStamp = DateTime.now();
+    }
 
     setState(() {
       _isSaving = true;
@@ -121,11 +263,19 @@ class _CompanyProfileScreenState
       final service = ref.read(companyServiceProvider);
       final companyId = _existingCompany?.id ?? user.uid;
 
+      final vatNumber = _vatNumberController.text.trim();
+      // Never auto-downgrade a company an admin already verified — only
+      // derive 'pending'/'none' from the VAT field when not already verified.
+      final verificationStatus = _existingCompany?.verificationStatus == 'verified'
+          ? 'verified'
+          : (vatNumber.isNotEmpty ? 'pending' : 'none');
+
       final company = CompanyModel(
         id: companyId,
         ownerId: user.uid,
         name: _nameController.text.trim(),
         description: _descriptionController.text.trim(),
+        certifications: _certificationsController.text.trim(),
         website: _websiteController.text.trim(),
         email: _emailController.text.trim(),
         phone: _phoneController.text.trim(),
@@ -134,11 +284,19 @@ class _CompanyProfileScreenState
         postalCode: _postalCodeController.text.trim(),
         country: 'Deutschland',
         employees: _selectedEmployees,
-        trade: _selectedTrade,
+        trades: _selectedTrades,
         services: _selectedServices,
         logoUrl: _existingCompany?.logoUrl ?? '',
-        contentFlagged: containsBlockedContent(_nameController.text) ||
+        vatNumber: vatNumber,
+        verificationStatus: verificationStatus,
+        // Once flagged, stays flagged through owner edits until an admin
+        // clears it — matches the Firestore rule, which only allows
+        // contentFlagged to move false→true (never true→false) on a
+        // non-admin write, so a self-edit can never silently unflag.
+        contentFlagged: (_existingCompany?.contentFlagged ?? false) ||
+            containsBlockedContent(_nameController.text) ||
             containsBlockedContent(_descriptionController.text),
+        lastNameChangeAt: nameStamp,
       );
 
       if (_existingCompany == null) {
@@ -147,7 +305,9 @@ class _CompanyProfileScreenState
         await service.updateCompany(company);
       }
 
-        // Sync updated company info to all capacity posts
+        // Sync updated company info to all capacity posts — the contact
+        // snapshot (on the locked owner sidecars) and the non-identifying
+        // trust signals (on the public posts) both refresh best-effort here.
         await ref
             .read(capacityServiceProvider)
             .updateCompanyNameOnAllPosts(
@@ -156,14 +316,32 @@ class _CompanyProfileScreenState
               newCity: company.city,
               newPhone: company.phone,
               newEmail: company.email,
+              verified: company.isVerified,
+              ratingSum: company.ratingSum,
+              ratingCount: company.ratingCount,
             );
+
+        AnalyticsService.logEvent('company_profile_completed');
 
         setState(() {
           _successMessage = company.contentFlagged
               ? AppLocalizations.of(context).postingUnderReviewNotice
               : AppLocalizations.of(context).profileSavedSuccess;
           _existingCompany = company;
+          _savedSnapshot = _snapshot(); // now clean → disable Save until a change
         });
+
+        // Wow moment: profile complete (once) — the activation milestone that
+        // unlocks visibility + posting.
+        if (mounted && company.isProfileComplete && !company.contentFlagged) {
+          final l = AppLocalizations.of(context);
+          Milestone.celebrateOnce(context,
+              uid: companyId,
+              key: 'first_profile',
+              icon: Icons.verified_user_outlined,
+              title: l.msProfileTitle,
+              subtitle: l.msProfileBody);
+        }
       } catch (e) {
         setState(() {
           _errorMessage =
@@ -176,15 +354,29 @@ class _CompanyProfileScreenState
 
   @override
   void dispose() {
+    _scrollController.dispose();
     _nameController.dispose();
     _descriptionController.dispose();
+    _certificationsController.dispose();
     _websiteController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
     _addressController.dispose();
     _cityController.dispose();
     _postalCodeController.dispose();
+    _vatNumberController.dispose();
     super.dispose();
+  }
+
+  Future<void> _emailVerificationDoc() async {
+    final uri = Uri(
+      scheme: 'mailto',
+      path: 'info@capacify.de',
+      queryParameters: {'subject': 'Capacify Verifizierung'},
+    );
+    try {
+      await launchUrl(uri);
+    } catch (_) {}
   }
 
   @override
@@ -192,8 +384,15 @@ class _CompanyProfileScreenState
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
     if (_isLoading) {
-      return const Scaffold(
-        body: Center(
+      return Scaffold(
+        appBar: AppBar(
+          backgroundColor: c.surface,
+          leading: IconButton(
+            icon: Icon(Icons.arrow_back, color: c.textPrimary),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ),
+        body: const Center(
           child: CircularProgressIndicator(
             color: AppColors.primary,
           ),
@@ -201,10 +400,36 @@ class _CompanyProfileScreenState
       );
     }
 
+    final isMobile = MediaQuery.of(context).size.width < 768;
+
     return Scaffold(
       backgroundColor: c.background,
+      appBar: AppBar(
+        backgroundColor: c.surface,
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back, color: c.textPrimary),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Text(
+          l.companyProfileTitle,
+          style: TextStyle(
+            color: c.textPrimary,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(3),
+          child: LinearProgressIndicator(
+            value: _completeness,
+            minHeight: 3,
+            backgroundColor: c.border,
+            color: _completeness >= 1.0 ? AppColors.live : AppColors.primary,
+          ),
+        ),
+      ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(32),
+        controller: _scrollController,
+        padding: EdgeInsets.all(isMobile ? 20 : 32),
         child: Center(
           child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 720),
@@ -215,23 +440,23 @@ class _CompanyProfileScreenState
               children: [
                 // Header
                 Text(
-                  l.companyProfileTitle,
-                  style: TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.bold,
-                    color: c.textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
                   l.companyProfileSubtitle,
                   style: TextStyle(
                     fontSize: 14,
                     color: c.textSecondary,
                   ),
                 ),
+                const SizedBox(height: 4),
+                Text(
+                  l.profileCompletePercent((_completeness * 100).round()),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: _completeness >= 1.0 ? AppColors.live : c.textTertiary,
+                  ),
+                ),
 
-                const SizedBox(height: 24),
+                SizedBox(height: isMobile ? 14 : 24),
 
                 if (_existingCompany != null) ...[
                   Container(
@@ -263,7 +488,7 @@ class _CompanyProfileScreenState
                       ],
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  SizedBox(height: isMobile ? 8 : 12),
 
                   if (_existingCompany!.contentFlagged)
                     Container(
@@ -287,10 +512,359 @@ class _CompanyProfileScreenState
                       ),
                     ),
 
-                  const SizedBox(height: 12),
+                  SizedBox(height: isMobile ? 8 : 12),
                 ],
 
-                // Success message
+                // Section: Basic Info
+                _SectionHeader(title: l.basicInfoSection),
+                SizedBox(height: isMobile ? 10 : 16),
+
+                CustomTextField(
+                  fieldKey: _nameFieldKey,
+                  label: l.companyNameLabel,
+                  hint: l.companyNameHint,
+                  controller: _nameController,
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return l.required;
+                    }
+                    return null;
+                  },
+                ),
+
+                SizedBox(height: isMobile ? 12 : 20),
+
+                // Trade selection (up to 2)
+                Column(
+                  key: _tradesFieldKey,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      l.tradeBranchLabel,
+                      style: TextStyle(
+                        color: c.textSecondary,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      l.maxTwoTradesNotice,
+                      style: TextStyle(
+                        color: c.textTertiary,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: kTrades.map((trade) {
+                        final isSelected = _selectedTrades.contains(trade);
+                        final atLimit = _selectedTrades.length >= 2 && !isSelected;
+                        return FilterChip(
+                          label: Text(l.tradeName(trade)),
+                          selected: isSelected,
+                          onSelected: atLimit
+                              ? null
+                              : (selected) {
+                                  setState(() {
+                                    if (selected) {
+                                      _selectedTrades.add(trade);
+                                    } else {
+                                      _selectedTrades.remove(trade);
+                                    }
+                                  });
+                                },
+                          backgroundColor: c.surfaceVariant,
+                          selectedColor: AppColors.primary.withOpacity(0.2),
+                          checkmarkColor: AppColors.primary,
+                          labelStyle: TextStyle(
+                            color: isSelected
+                                ? AppColors.primary
+                                : (atLimit ? c.textTertiary : c.textSecondary),
+                            fontSize: 13,
+                          ),
+                          side: BorderSide(
+                            color: isSelected ? AppColors.primary : c.border,
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ],
+                ),
+
+                SizedBox(height: isMobile ? 12 : 20),
+
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      l.descriptionRequiredLabel,
+                      style: TextStyle(
+                        color: c.textSecondary,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    TextFormField(
+                      key: _descriptionFieldKey,
+                      controller: _descriptionController,
+                      maxLines: 4,
+                      style: TextStyle(
+                        color: c.textPrimary,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: l.describeCompanyHint,
+                      ),
+                      validator: (value) {
+                        if (value == null || value.isEmpty) {
+                          return l.required;
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      l.certificationsLabel,
+                      style: TextStyle(
+                        color: c.textSecondary,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    TextFormField(
+                      controller: _certificationsController,
+                      maxLines: 2,
+                      style: TextStyle(color: c.textPrimary),
+                      decoration: InputDecoration(hintText: l.certificationsHint),
+                    ),
+                  ],
+                ),
+
+                SizedBox(height: isMobile ? 18 : 32),
+
+                // Section: Contact
+                _SectionHeader(title: l.contactInfoSection),
+                SizedBox(height: isMobile ? 10 : 16),
+
+                Row(
+                  children: [
+                    Expanded(
+                      child: CustomTextField(
+                        fieldKey: _emailFieldKey,
+                        label: l.emailLabel,
+                        hint: l.companyEmailHint,
+                        controller: _emailController,
+                        keyboardType: TextInputType.emailAddress,
+                        validator: (v) => Validators.email(v, l, required: false),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: CustomTextField(
+                        fieldKey: _phoneFieldKey,
+                        label: l.phoneLabel,
+                        hint: l.phoneHint,
+                        controller: _phoneController,
+                        keyboardType: TextInputType.phone,
+                        validator: (v) => Validators.phone(v, l),
+                      ),
+                    ),
+                  ],
+                ),
+
+                SizedBox(height: isMobile ? 12 : 20),
+
+                CustomTextField(
+                  label: l.websiteOptionalLabel,
+                  hint: l.websiteHint,
+                  controller: _websiteController,
+                  keyboardType: TextInputType.url,
+                ),
+
+                SizedBox(height: isMobile ? 18 : 32),
+
+                // Section: Location
+                _SectionHeader(title: l.locationSection),
+                SizedBox(height: isMobile ? 10 : 16),
+
+                CustomTextField(
+                  label: l.addressLabel,
+                  hint: l.addressHint,
+                  controller: _addressController,
+                ),
+
+                SizedBox(height: isMobile ? 12 : 20),
+
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 2,
+                      child: CustomTextField(
+                        fieldKey: _cityFieldKey,
+                        label: l.cityLabel,
+                        hint: l.cityHint,
+                        controller: _cityController,
+                        validator: (value) {
+                          if (value == null || value.isEmpty) {
+                            return l.required;
+                          }
+                          return null;
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: CustomTextField(
+                        fieldKey: _postalCodeFieldKey,
+                        label: l.postalCodeLabel,
+                        hint: '10115',
+                        controller: _postalCodeController,
+                        keyboardType: TextInputType.number,
+                        validator: (v) => Validators.postalCode(v, l),
+                      ),
+                    ),
+                  ],
+                ),
+
+                SizedBox(height: isMobile ? 18 : 32),
+
+                // Section: Company Details
+                _SectionHeader(title: l.companyDetailsSection),
+                SizedBox(height: isMobile ? 10 : 16),
+
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      l.employeeCountLabel,
+                      style: TextStyle(
+                        color: c.textSecondary,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    DropdownButtonFormField<String>(
+                      value: _selectedEmployees,
+                      dropdownColor: c.surface,
+                      style: TextStyle(
+                        color: c.textPrimary,
+                      ),
+                      decoration: const InputDecoration(),
+                      items: kEmployeeCounts
+                          .map((e) => DropdownMenuItem(
+                                value: e,
+                                child: Text(l.employeesSuffix(e)),
+                              ))
+                          .toList(),
+                      onChanged: (value) {
+                        setState(() {
+                          _selectedEmployees = value!;
+                        });
+                      },
+                    ),
+                  ],
+                ),
+
+                SizedBox(height: isMobile ? 18 : 32),
+
+                // Verification
+                _SectionHeader(title: l.sectionVerify),
+                SizedBox(height: isMobile ? 10 : 16),
+
+                CustomTextField(
+                  fieldKey: _vatNumberFieldKey,
+                  label: l.vatLabel, hint: l.vatHint,
+                  controller: _vatNumberController,
+                  validator: (v) => Validators.vatNumberDE(v, l),
+                ),
+                SizedBox(height: isMobile ? 8 : 12),
+
+                if (_existingCompany?.verificationStatus == 'verified')
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: AppColors.live.withOpacity(0.06),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.live.withOpacity(0.25)),
+                    ),
+                    child: Row(children: [
+                      const Icon(Icons.verified, size: 15, color: AppColors.live),
+                      const SizedBox(width: 8),
+                      Text(l.verifiedBadgeLabel, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.live)),
+                    ]),
+                  )
+                else
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: AppColors.live.withOpacity(0.06),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.live.withOpacity(0.25)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(children: [
+                          const Icon(Icons.verified_outlined, size: 15, color: AppColors.live),
+                          const SizedBox(width: 8),
+                          Text(l.verifyHowTitle, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.live)),
+                        ]),
+                        const SizedBox(height: 10),
+                        Text(l.verifySteps, style: TextStyle(fontSize: 12, color: c.textSecondary, height: 1.6)),
+                        const SizedBox(height: 8),
+                        InkWell(
+                          onTap: _emailVerificationDoc,
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.mail_outline, size: 13, color: AppColors.live),
+                              SizedBox(width: 5),
+                              Text(
+                                'info@capacify.de',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.live,
+                                  decoration: TextDecoration.underline,
+                                  decorationColor: AppColors.live,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        // Instant automatic verification via the EU VIES check
+                        // (server-side function). A valid VAT verifies at once —
+                        // no waiting for the founder. Save your VAT number first.
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: _verifyingVat ? null : _runVatVerification,
+                            icon: _verifyingVat
+                                ? const SizedBox(
+                                    width: 16, height: 16,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.live))
+                                : const Icon(Icons.verified_user_outlined, size: 16),
+                            label: Text(l.verifyNowVies),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.live,
+                              side: const BorderSide(color: AppColors.live),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                SizedBox(height: isMobile ? 20 : 40),
+
+                // Success message — shown right above the button the user
+                // just pressed, instead of making them scroll up to find it.
                 if (_successMessage != null) ...[
                   Container(
                     padding: const EdgeInsets.all(12),
@@ -319,10 +893,11 @@ class _CompanyProfileScreenState
                       ],
                     ),
                   ),
-                  const SizedBox(height: 24),
+                  SizedBox(height: isMobile ? 14 : 20),
                 ],
 
-                // Error message
+                // Error message — same placement; field-level problems are
+                // also scrolled into view via _scrollToFirstInvalidField().
                 if (_errorMessage != null) ...[
                   Container(
                     padding: const EdgeInsets.all(12),
@@ -341,273 +916,13 @@ class _CompanyProfileScreenState
                       ),
                     ),
                   ),
-                  const SizedBox(height: 24),
+                  SizedBox(height: isMobile ? 14 : 20),
                 ],
 
-                // Section: Basic Info
-                _SectionHeader(title: l.basicInfoSection),
-                const SizedBox(height: 16),
-
-                CustomTextField(
-                  label: l.companyNameLabel,
-                  hint: l.companyNameHint,
-                  controller: _nameController,
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return l.required;
-                    }
-                    return null;
-                  },
-                ),
-
-                const SizedBox(height: 20),
-
-                // Trade dropdown
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      l.tradeBranchLabel,
-                      style: TextStyle(
-                        color: c.textSecondary,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    DropdownButtonFormField<String>(
-                      value: _selectedTrade,
-                      dropdownColor: c.surface,
-                      style: TextStyle(
-                        color: c.textPrimary,
-                      ),
-                      decoration: const InputDecoration(),
-                      items: kTrades
-                          .map((trade) => DropdownMenuItem(
-                                value: trade,
-                                child: Text(l.tradeName(trade)),
-                              ))
-                          .toList(),
-                      onChanged: (value) {
-                        setState(() {
-                          _selectedTrade = value!;
-                        });
-                      },
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 20),
-
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      l.descriptionRequiredLabel,
-                      style: TextStyle(
-                        color: c.textSecondary,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    TextFormField(
-                      controller: _descriptionController,
-                      maxLines: 4,
-                      style: TextStyle(
-                        color: c.textPrimary,
-                      ),
-                      decoration: InputDecoration(
-                        hintText: l.describeCompanyHint,
-                      ),
-                      validator: (value) {
-                        if (value == null || value.isEmpty) {
-                          return l.required;
-                        }
-                        return null;
-                      },
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 32),
-
-                // Section: Contact
-                _SectionHeader(title: l.contactInfoSection),
-                const SizedBox(height: 16),
-
-                Row(
-                  children: [
-                    Expanded(
-                      child: CustomTextField(
-                        label: l.emailLabel,
-                        hint: l.companyEmailHint,
-                        controller: _emailController,
-                        keyboardType: TextInputType.emailAddress,
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: CustomTextField(
-                        label: l.phoneLabel,
-                        hint: l.phoneHint,
-                        controller: _phoneController,
-                        keyboardType: TextInputType.phone,
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 20),
-
-                CustomTextField(
-                  label: l.websiteLabel,
-                  hint: l.websiteHint,
-                  controller: _websiteController,
-                  keyboardType: TextInputType.url,
-                ),
-
-                const SizedBox(height: 32),
-
-                // Section: Location
-                _SectionHeader(title: l.locationSection),
-                const SizedBox(height: 16),
-
-                CustomTextField(
-                  label: l.addressLabel,
-                  hint: l.addressHint,
-                  controller: _addressController,
-                ),
-
-                const SizedBox(height: 20),
-
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: CustomTextField(
-                        label: l.cityLabel,
-                        hint: l.cityHint,
-                        controller: _cityController,
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return l.required;
-                          }
-                          return null;
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: CustomTextField(
-                        label: l.postalCodeLabel,
-                        hint: '10115',
-                        controller: _postalCodeController,
-                        keyboardType: TextInputType.number,
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 32),
-
-                // Section: Company Details
-                _SectionHeader(title: l.companyDetailsSection),
-                const SizedBox(height: 16),
-
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      l.employeeCountLabel,
-                      style: TextStyle(
-                        color: c.textSecondary,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    DropdownButtonFormField<String>(
-                      value: _selectedEmployees,
-                      dropdownColor: c.surface,
-                      style: TextStyle(
-                        color: c.textPrimary,
-                      ),
-                      decoration: const InputDecoration(),
-                      items: kEmployees
-                          .map((e) => DropdownMenuItem(
-                                value: e,
-                                child: Text(l.employeesSuffix(e)),
-                              ))
-                          .toList(),
-                      onChanged: (value) {
-                        setState(() {
-                          _selectedEmployees = value!;
-                        });
-                      },
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 20),
-
-                // Services multi-select
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      l.servicesLabel,
-                      style: TextStyle(
-                        color: c.textSecondary,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: kTrades.map((trade) {
-                        final isSelected =
-                            _selectedServices.contains(trade);
-                        return FilterChip(
-                          label: Text(l.tradeName(trade)),
-                          selected: isSelected,
-                          onSelected: (selected) {
-                            setState(() {
-                              if (selected) {
-                                _selectedServices.add(trade);
-                              } else {
-                                _selectedServices.remove(trade);
-                              }
-                            });
-                          },
-                          backgroundColor: c.surfaceVariant,
-                          selectedColor:
-                              AppColors.primary.withOpacity(0.2),
-                          checkmarkColor: AppColors.primary,
-                          labelStyle: TextStyle(
-                            color: isSelected
-                                ? AppColors.primary
-                                : c.textSecondary,
-                            fontSize: 13,
-                          ),
-                          side: BorderSide(
-                            color: isSelected
-                                ? AppColors.primary
-                                : c.border,
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 40),
-
-                // Save button
+                // Save button — disabled while saving, and disabled again once
+                // saved until the form actually changes (dirty tracking, #2).
                 ElevatedButton(
-                  onPressed: _isSaving ? null : _save,
+                  onPressed: (_isSaving || _snapshot() == _savedSnapshot) ? null : _save,
                   style: ElevatedButton.styleFrom(
                     minimumSize: const Size(200, 50),
                   ),
@@ -623,7 +938,7 @@ class _CompanyProfileScreenState
                       : Text(l.saveProfileButton),
                 ),
 
-                const SizedBox(height: 32),
+                SizedBox(height: isMobile ? 16 : 32),
               ],
             ),
           ),

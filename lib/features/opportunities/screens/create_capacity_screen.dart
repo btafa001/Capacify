@@ -2,33 +2,36 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/models/capacity_model.dart';
+import '../../../core/models/capacity_owner_model.dart';
 import '../../../core/models/company_model.dart';
 import '../../../core/services/capacity_provider.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/utils/content_moderation.dart';
-
-// Capacify-specific trades (architecture, structural engineering, and general contractors removed)
-const List<String> kCapacifyTrades = [
-  'Rohbau',
-  'Trockenbau',
-  'Elektro',
-  'Sanitär & Heizung',
-  'Dach',
-  'Fassade',
-  'Tiefbau',
-  'Stahl',
-  'Beton',
-  'HVAC',
-  'Lieferant',
-];
+import '../../../core/services/analytics_service.dart';
+import '../../../shared/widgets/milestone.dart';
+import '../../../main.dart' show navigatorKey;
 
 class CreateCapacityScreen extends ConsumerStatefulWidget {
   final CompanyModel company;
 
+  /// When set, the post is submitted through this callback (receiving both the
+  /// anonymized post and its identity sidecar) instead of the default
+  /// `capacityServiceProvider.createCapacity()`. Used by the admin-assisted
+  /// onboarding wizard to route both writes through a secondary Firebase
+  /// session (so they're owned by the new company, not the admin). Null for
+  /// every normal call site — those behave exactly as before.
+  final Future<void> Function(CapacityModel, CapacityOwnerModel)? onSubmitOverride;
+
+  /// Optional prefill — "Erneut posten" (repost) passes a previous post so the
+  /// form opens pre-filled and publishing is a 1-change, sub-10-second action.
+  final CapacityModel? prefill;
+
   const CreateCapacityScreen({
     super.key,
     required this.company,
+    this.onSubmitOverride,
+    this.prefill,
   });
 
   @override
@@ -51,15 +54,30 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
   int _workerCount = 1;
   bool _isPosting = false;
 
+  // Description is optional — trade + district are the only required fields.
   bool get _isValid =>
-      _selectedTrade.isNotEmpty &&
-      _selectedDistrict.isNotEmpty &&
-      _descriptionController.text.trim().isNotEmpty;
+      _selectedTrade.isNotEmpty && _selectedDistrict.isNotEmpty;
 
   @override
   void initState() {
     super.initState();
-    // initialize worker count controller with default value
+    AnalyticsService.logScreenView('CreateCapacity');
+    final p = widget.prefill;
+    if (p != null) {
+      // Repost: reopen a previous post pre-filled (change one field → publish).
+      _type = p.type;
+      _selectedTrade = p.trade;
+      _availabilityType = p.availabilityType;
+      _selectedDistrict = p.location;
+      _workerCount = p.workerCount;
+      _descriptionController.text = p.description;
+    } else {
+      // Smart defaults: pre-select the company's primary trade so a first-time
+      // poster starts one step ahead.
+      if (widget.company.trades.isNotEmpty) {
+        _selectedTrade = widget.company.trades.first;
+      }
+    }
     _workerCountController.text = '$_workerCount';
   }
 
@@ -96,11 +114,6 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
 
       final capacity = CapacityModel(
         id: '',
-        companyId: widget.company.id,
-        companyName: widget.company.name,
-        companyCity: widget.company.city,
-        companyPhone: widget.company.phone,
-        companyEmail: widget.company.email,
         type: _type,
         status: CapacityStatus.active,
         availabilityType: _availabilityType,
@@ -111,10 +124,30 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
         workerCount: _workerCount,
         availableFrom: _availableFrom ?? now,
         availableTo: _availableFrom != null ? (_availableTo ?? availableTo) : availableTo,
-        contentFlagged: containsBlockedContent(_descriptionController.text),
+        contentFlagged: shouldFlagDescription(_descriptionController.text),
+        // Non-identifying trust signals snapshotted from the company.
+        posterVerified: widget.company.isVerified,
+        posterRatingSum: widget.company.ratingSum,
+        posterRatingCount: widget.company.ratingCount,
       );
 
-      await ref.read(capacityServiceProvider).createCapacity(capacity);
+      // The identity sidecar — written to the locked capacityOwners/{id},
+      // never to the public post. Contact is snapshotted from the company.
+      final owner = CapacityOwnerModel(
+        postId: '',
+        posterCompanyId: widget.company.id,
+        companyName: widget.company.name,
+        contactPhone: widget.company.phone,
+        contactEmail: widget.company.email,
+      );
+
+      if (widget.onSubmitOverride != null) {
+        await widget.onSubmitOverride!(capacity, owner);
+      } else {
+        await ref.read(capacityServiceProvider).createCapacity(capacity, owner: owner);
+      }
+
+      AnalyticsService.logEvent('capacity_created', parameters: {'trade': _selectedTrade});
 
       if (mounted) {
         Navigator.pop(context);
@@ -124,6 +157,19 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
             backgroundColor: capacity.contentFlagged ? AppColors.accent : AppColors.live,
           ),
         );
+        // Wow moment: first live post. Fire on the root navigator (this screen
+        // just popped) so it lands on the feed. Not for flagged/under-review.
+        if (!capacity.contentFlagged) {
+          final rootCtx = navigatorKey.currentContext;
+          if (rootCtx != null) {
+            Milestone.celebrateOnce(rootCtx,
+                uid: widget.company.id,
+                key: 'first_post',
+                icon: Icons.rocket_launch_outlined,
+                title: l.msFirstPostTitle,
+                subtitle: l.msFirstPostBody);
+          }
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -226,7 +272,7 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                     ),
                   ),
 
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 18),
 
                   // SECTION 1: TYPE SELECTOR
                   _SectionLabel(
@@ -263,7 +309,7 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                     ],
                   ),
 
-                  const SizedBox(height: 28),
+                  const SizedBox(height: 20),
 
                   // SECTION 2: TRADE SELECTOR (VISUAL GRID)
                   _SectionLabel(
@@ -273,7 +319,7 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
-                    children: kCapacifyTrades.map((trade) {
+                    children: kTrades.map((trade) {
                       final isSelected = _selectedTrade == trade;
                       return GestureDetector(
                         onTap: () => setState(
@@ -307,7 +353,7 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                     }).toList(),
                   ),
 
-                  const SizedBox(height: 28),
+                  const SizedBox(height: 20),
 
                   // SECTION 3: AVAILABILITY
                   _SectionLabel(label: l.section3When),
@@ -436,7 +482,7 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                     ],
                   ),
 
-                  const SizedBox(height: 28),
+                  const SizedBox(height: 20),
 
                   // SECTION 4: HAMBURG DISTRICT
                   _SectionLabel(
@@ -476,7 +522,7 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                     }).toList(),
                   ),
 
-                  const SizedBox(height: 28),
+                  const SizedBox(height: 20),
 
                   // SECTION 5: WORKER COUNT
                   _SectionLabel(label: l.section5WorkerCount),
@@ -555,7 +601,7 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                     ),
                   ),
 
-                  const SizedBox(height: 28),
+                  const SizedBox(height: 20),
 
                   // SECTION 6: DESCRIPTION
                   _SectionLabel(
@@ -584,7 +630,7 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                     ),
                   ),
 
-                  const SizedBox(height: 100),
+                  const SizedBox(height: 24),
                 ],
               ),
             ),
@@ -743,7 +789,16 @@ class _TypeButton extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        // Fixed minHeight (not IntrinsicHeight+stretch) — IntrinsicHeight
+        // underestimates here because it measures each Expanded child's
+        // intrinsic height before the Row's flex pass narrows it to half
+        // the width, so it doesn't account for the subtitle wrapping to a
+        // second line at the actual (halved) width, causing overflow. A
+        // fixed minHeight sized for the worst-case 2-line subtitle avoids
+        // that entirely and keeps both buttons the same height regardless
+        // of how either subtitle wraps.
+        constraints: const BoxConstraints(minHeight: 64),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
           color: isSelected ? color.withOpacity(0.12) : c.surface,
           borderRadius: BorderRadius.circular(8),
@@ -753,12 +808,15 @@ class _TypeButton extends StatelessWidget {
           children: [
             Icon(icon, color: isSelected ? color : c.textSecondary),
             const SizedBox(width: 12),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label, style: TextStyle(fontSize: 13, fontWeight: isSelected ? FontWeight.w700 : FontWeight.w600, color: isSelected ? color : c.textPrimary)),
-                Text(subtitle, style: TextStyle(fontSize: 11, color: c.textSecondary)),
-              ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(label, style: TextStyle(fontSize: 13, fontWeight: isSelected ? FontWeight.w700 : FontWeight.w600, color: isSelected ? color : c.textPrimary)),
+                  Text(subtitle, style: TextStyle(fontSize: 11, color: c.textSecondary)),
+                ],
+              ),
             ),
           ],
         ),
@@ -894,32 +952,24 @@ class _DateRangePickerDialogState extends State<_DateRangePickerDialog> {
               ),
             ),
             Divider(color: c.border, height: 1),
-            Theme(
-              data: ThemeData.dark().copyWith(
-                colorScheme: const ColorScheme.dark(
-                  primary: AppColors.primary,
-                  surface: AppColors.surface,
-                ),
-              ),
-              child: CalendarDatePicker(
-                key: ValueKey(_pickingStart),
-                initialDate: _pickingStart ? _start : _end,
-                firstDate: _pickingStart ? widget.firstDate : _start,
-                lastDate: widget.lastDate,
-                onDateChanged: (date) {
-                  setState(() {
-                    if (_pickingStart) {
-                      _start = date;
-                      if (_end.isBefore(_start)) {
-                        _end = _start.add(const Duration(days: 7));
-                      }
-                      _pickingStart = false;
-                    } else {
-                      _end = date;
+            CalendarDatePicker(
+              key: ValueKey(_pickingStart),
+              initialDate: _pickingStart ? _start : _end,
+              firstDate: _pickingStart ? widget.firstDate : _start,
+              lastDate: widget.lastDate,
+              onDateChanged: (date) {
+                setState(() {
+                  if (_pickingStart) {
+                    _start = date;
+                    if (_end.isBefore(_start)) {
+                      _end = _start.add(const Duration(days: 7));
                     }
-                  });
-                },
-              ),
+                    _pickingStart = false;
+                  } else {
+                    _end = date;
+                  }
+                });
+              },
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(8, 0, 16, 12),

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/models/company_model.dart';
 import '../../../core/localization/app_localizations.dart';
+import '../../../core/services/analytics_service.dart';
 
 class CompanyAnalyticsScreen extends ConsumerWidget {
   final CompanyModel company;
@@ -14,6 +15,7 @@ class CompanyAnalyticsScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    WidgetsBinding.instance.addPostFrameCallback((_) => AnalyticsService.logScreenView('CompanyAnalytics'));
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
     return Scaffold(
@@ -77,7 +79,7 @@ class CompanyAnalyticsScreen extends ConsumerWidget {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          l.tradeName(company.trade),
+                          company.trades.map((t) => l.tradeName(t)).join(', '),
                           style: TextStyle(
                             fontSize: 13,
                             color: c.textSecondary,

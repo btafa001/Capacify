@@ -5,7 +5,8 @@ import '../../core/theme/app_theme.dart';
 
 class LanguageSwitcher extends ConsumerWidget {
   final bool compact;
-  const LanguageSwitcher({super.key, this.compact = false});
+  final bool iconOnly;
+  const LanguageSwitcher({super.key, this.compact = false, this.iconOnly = false});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -14,7 +15,33 @@ class LanguageSwitcher extends ConsumerWidget {
     final isDe = locale.languageCode == 'de';
 
     void setLocale(String lang) =>
-        ref.read(localeProvider.notifier).state = Locale(lang);
+        ref.read(localeProvider.notifier).setLocale(Locale(lang));
+
+    if (iconOnly) {
+      return Tooltip(
+        message: isDe ? 'English' : 'Deutsch',
+        child: GestureDetector(
+          onTap: () => setLocale(isDe ? 'en' : 'de'),
+          child: Container(
+            padding: const EdgeInsets.all(7),
+            decoration: BoxDecoration(
+              color: c.surfaceVariant,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: c.border),
+            ),
+            child: Text(
+              isDe ? 'DE' : 'EN',
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w900,
+                color: AppColors.primary,
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
 
     if (compact) {
       return Row(

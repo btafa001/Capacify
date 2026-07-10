@@ -86,39 +86,60 @@ class AdminService {
     });
   }
 
-  /// Approving makes the rating publicly visible and adds it to the
-  /// company's ratingSum/ratingCount average. Re-reads the rating doc
-  /// inside the transaction so a double-tap can't double-count it.
-  Future<void> approveRating(String ratingId) async {
-    final ratingRef = _db.collection('companyRatings').doc(ratingId);
-    await _db.runTransaction((tx) async {
-      final ratingSnap = await tx.get(ratingRef);
-      if (!ratingSnap.exists) return;
-      final data = ratingSnap.data()!;
-      if (data['status'] == 'approved') return;
-
-      final companyId = data['companyId'] as String;
-      final ratingValue = (data['rating'] ?? 0) as int;
-      final companyRef = _db.collection('companies').doc(companyId);
-      final companySnap = await tx.get(companyRef);
-      final currentSum = (companySnap.data()?['ratingSum'] ?? 0) as int;
-      final currentCount = (companySnap.data()?['ratingCount'] ?? 0) as int;
-
-      tx.update(ratingRef, {'status': 'approved'});
-      tx.update(companyRef, {
-        'ratingSum': currentSum + ratingValue,
-        'ratingCount': currentCount + 1,
-      });
+  /// The denormalized ratingSum/ratingCount on a company doc is ADMIN-ONLY
+  /// (firestore.rules blocks every non-admin from writing it, so it can't be
+  /// forged). It is the exact sum/count of that company's *approved* reviews,
+  /// recomputed from scratch here on every moderation action. Recomputing
+  /// (rather than incrementing) means the number is always self-consistent and
+  /// self-healing — a client that edits/withdraws an approved rating can't
+  /// leave it permanently wrong, and a double-tap can't double-count.
+  Future<void> _recomputeRatingAggregate(String companyId) async {
+    final approved = await _db
+        .collection('companyRatings')
+        .where('companyId', isEqualTo: companyId)
+        .where('status', isEqualTo: 'approved')
+        .get();
+    int sum = 0;
+    for (final d in approved.docs) {
+      sum += (d.data()['rating'] ?? 0) as int;
+    }
+    await _db.collection('companies').doc(companyId).update({
+      'ratingSum': sum,
+      'ratingCount': approved.docs.length,
     });
   }
 
-  /// Rejecting just hides it — a pending rating was never counted, so
-  /// there's no aggregate to undo.
+  /// Approving makes the rating publicly visible, then recomputes the
+  /// company's aggregate from all approved reviews.
+  Future<void> approveRating(String ratingId) async {
+    final ratingRef = _db.collection('companyRatings').doc(ratingId);
+    final snap = await ratingRef.get();
+    if (!snap.exists) return;
+    final companyId = snap.data()!['companyId'] as String;
+    await ratingRef.update({'status': 'approved'});
+    await _recomputeRatingAggregate(companyId);
+  }
+
+  /// Rejecting hides the review. Recompute afterwards in case the rating was
+  /// previously approved (so its contribution is removed from the aggregate).
   Future<void> rejectRating(String ratingId) async {
-    await _db
-        .collection('companyRatings')
-        .doc(ratingId)
-        .update({'status': 'rejected'});
+    final ratingRef = _db.collection('companyRatings').doc(ratingId);
+    final snap = await ratingRef.get();
+    if (!snap.exists) return;
+    final companyId = snap.data()!['companyId'] as String;
+    await ratingRef.update({'status': 'rejected'});
+    await _recomputeRatingAggregate(companyId);
+  }
+
+  /// Admin hard-delete of a review, followed by an aggregate recompute so the
+  /// denormalized score updates immediately (unlike a rater self-withdrawal,
+  /// which can't write the aggregate and self-heals on the next moderation).
+  Future<void> deleteRatingAndRecompute({
+    required String ratingId,
+    required String companyId,
+  }) async {
+    await _db.collection('companyRatings').doc(ratingId).delete();
+    await _recomputeRatingAggregate(companyId);
   }
 
   // ─── FLAGGED CONTENT MODERATION ───
