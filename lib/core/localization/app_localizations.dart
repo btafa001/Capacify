@@ -584,6 +584,15 @@ class AppLocalizations {
   // everything else a generic one.
   String errorWithMessage(Object e) {
     final s = e.toString().toLowerCase();
+    // App Check first: when enforcement is on but tokens aren't flowing, the
+    // failure can surface either as an explicit app-check error or (for
+    // Firestore/Storage reads) as a plain permission-denied that looks exactly
+    // like a real rules denial. Catch the explicit signal here so an App Check
+    // outage is named for what it is instead of sending you to debug rules.
+    if (s.contains('app-check') || s.contains('appcheck') || s.contains('app check')) {
+      return _t('Sicherheitsprüfung (App Check) fehlgeschlagen. Bitte laden Sie die Seite neu.',
+          'Security check (App Check) failed. Please reload the page.');
+    }
     if (s.contains('permission-denied') || s.contains('permission_denied')) {
       return _t('Dazu haben Sie keine Berechtigung.',
           'You don\'t have permission to do that.');

@@ -304,7 +304,19 @@ class AuthService {
       case 'network-request-failed':
         return 'Netzwerkfehler. Bitte prüfen Sie Ihre Verbindung und versuchen Sie es erneut.';
       default:
-        return 'Ein Fehler ist aufgetreten. Bitte erneut versuchen.';
+        // App Check enforcement rejects Auth with a generic internal/unknown
+        // code whose message mentions App Check or an HTTP 401 — call that out
+        // distinctly so a config/enforcement outage (e.g. a broken reCAPTCHA
+        // token exchange) doesn't masquerade as a random glitch or bad
+        // password. Every other unknown failure carries its raw code so it's
+        // diagnosable in support instead of a dead-end message.
+        final detail = '${e.code} ${e.message ?? ''}'.toLowerCase();
+        if (detail.contains('app check') ||
+            detail.contains('app-check') ||
+            detail.contains('appcheck')) {
+          return 'Sicherheitsprüfung (App Check) fehlgeschlagen. Bitte laden Sie die Seite neu. Tritt das weiterhin auf, ist App Check vermutlich falsch konfiguriert.';
+        }
+        return 'Ein Fehler ist aufgetreten. Bitte erneut versuchen. (Code: ${e.code})';
     }
   }
 }
