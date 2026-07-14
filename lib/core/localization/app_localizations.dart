@@ -708,6 +708,15 @@ class AppLocalizations {
   String get saveErrorRetry      => _t('Fehler beim Speichern. Bitte erneut versuchen.', 'Error saving. Please try again.');
   String get companyProfileTitle    => _t('Unternehmensprofil', 'Company Profile');
   String get companyProfileSubtitle => _t('Präsentieren Sie Ihr Unternehmen auf Capacify', 'Present your company on Capacify');
+  // Logo upload
+  String get logoSectionTitle     => _t('Firmenlogo', 'Company logo');
+  String get logoUploadButton     => _t('Logo hochladen', 'Upload logo');
+  String get logoChangeButton     => _t('Logo ändern', 'Change logo');
+  String get logoHint             => _t('JPG oder PNG, max. 2 MB', 'JPG or PNG, max 2 MB');
+  String get logoSaveProfileFirst => _t('Speichern Sie zuerst Ihr Profil, um ein Logo hochzuladen.', 'Save your profile first to upload a logo.');
+  String get logoFormatError      => _t('Nur JPG- oder PNG-Dateien sind erlaubt.', 'Only JPG or PNG files are allowed.');
+  String get logoSizeError        => _t('Datei zu groß (max. 2 MB).', 'File too large (max 2 MB).');
+  String get logoUploadSuccess    => _t('Logo hochgeladen.', 'Logo uploaded.');
   String get basicInfoSection     => _t('Grundinformationen', 'Basic Information');
   String get tradeBranchLabel     => _t('Gewerk / Branche *', 'Trade / Industry *');
   String get descriptionRequiredLabel => _t('Beschreibung *', 'Description *');

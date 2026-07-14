@@ -1,4 +1,6 @@
+import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import '../models/company_model.dart';
 import '../models/company_rating_model.dart';
 
@@ -19,6 +21,22 @@ class CompanyService {
         .collection('companies')
         .doc(company.id)
         .update(company.toFirestoreForUpdate());
+  }
+
+  /// Uploads a company logo to a fixed path (storage.rules caps it at 2 MB,
+  /// image/jpeg or image/png only). A fixed filename means every re-upload
+  /// overwrites the previous logo instead of leaving old files behind.
+  /// Callers should downsize/compress the image before calling this (see
+  /// CompanyProfileScreen's image_picker maxWidth/maxHeight/imageQuality) —
+  /// this method just uploads whatever bytes it's given.
+  Future<String> uploadLogo({
+    required String companyId,
+    required Uint8List bytes,
+    required String contentType,
+  }) async {
+    final ref = FirebaseStorage.instance.ref('company_logos/$companyId/logo');
+    await ref.putData(bytes, SettableMetadata(contentType: contentType));
+    return ref.getDownloadURL();
   }
 
   /// Toggle the retention-email opt-in (match alerts + weekly digest). A single
