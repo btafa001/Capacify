@@ -318,6 +318,7 @@ class _LegalSection extends StatelessWidget {
           const SizedBox(height: 12),
 
           Container(
+            width: double.infinity,
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: c.surface,
