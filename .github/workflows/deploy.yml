@@ -1,0 +1,37 @@
+name: Deploy to Firebase Hosting
+
+# Vercel is wired to this repo's root package.json, which is a leftover
+# create-next-app scaffold — not the real app, so it never deployed anything
+# meaningful. The real app is Flutter web, and firebase.json already points
+# Hosting at build/web. This builds it and deploys Hosting + Storage rules
+# on every push to main.
+#
+# Requires a repo secret named FIREBASE_SERVICE_ACCOUNT containing a Firebase
+# service account JSON key (Firebase Console → Project Settings → Service
+# accounts → Generate new private key) with Hosting Admin + Firebase Rules
+# Admin roles for project capacify-mvp.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # lets you trigger a deploy by hand from the Actions tab
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - run: flutter pub get
+      - run: flutter build web --release
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - run: npm install -g firebase-tools
+      - run: firebase deploy --only hosting,storage --project capacify-mvp --non-interactive

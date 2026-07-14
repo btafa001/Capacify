@@ -91,16 +91,21 @@ class CompanyDetailScreen extends ConsumerWidget {
                   final avatar = CircleAvatar(
                     radius: 40,
                     backgroundColor: AppColors.primary.withOpacity(0.15),
-                    child: Text(
-                      company.name.isNotEmpty
-                          ? company.name[0].toUpperCase()
-                          : 'U',
-                      style: const TextStyle(
-                        color: AppColors.primary,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 32,
-                      ),
-                    ),
+                    backgroundImage: liveCompany.logoUrl.isNotEmpty
+                        ? NetworkImage(liveCompany.logoUrl)
+                        : null,
+                    child: liveCompany.logoUrl.isNotEmpty
+                        ? null
+                        : Text(
+                            company.name.isNotEmpty
+                                ? company.name[0].toUpperCase()
+                                : 'U',
+                            style: const TextStyle(
+                              color: AppColors.primary,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 32,
+                            ),
+                          ),
                   );
 
                   final info = Column(

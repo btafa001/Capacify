@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/models/company_model.dart';
 import '../../../core/services/auth_provider.dart';
@@ -56,6 +57,7 @@ class _CompanyProfileScreenState
   bool _isLoading = false;
   bool _isSaving = false;
   bool _verifyingVat = false;
+  bool _isUploadingLogo = false;
   String? _errorMessage;
   String? _successMessage;
   CompanyModel? _existingCompany;
@@ -94,6 +96,73 @@ class _CompanyProfileScreenState
       }
     } finally {
       if (mounted) setState(() => _verifyingVat = false);
+    }
+  }
+
+  // Downsized/compressed on pick (max 800x800, 70% JPEG quality) to keep
+  // Storage cheap — this is a first cut, not a full media pipeline.
+  Future<void> _pickAndUploadLogo() async {
+    final l = AppLocalizations.of(context);
+    if (_existingCompany == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l.logoSaveProfileFirst), backgroundColor: AppColors.error),
+      );
+      return;
+    }
+
+    final picked = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 800,
+      maxHeight: 800,
+      imageQuality: 70,
+    );
+    if (picked == null || !mounted) return;
+
+    final ext = picked.name.split('.').last.toLowerCase();
+    final contentType = ext == 'png'
+        ? 'image/png'
+        : (ext == 'jpg' || ext == 'jpeg')
+            ? 'image/jpeg'
+            : null;
+    if (contentType == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l.logoFormatError), backgroundColor: AppColors.error),
+      );
+      return;
+    }
+
+    final bytes = await picked.readAsBytes();
+    if (bytes.length > 2 * 1024 * 1024) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l.logoSizeError), backgroundColor: AppColors.error),
+        );
+      }
+      return;
+    }
+
+    setState(() => _isUploadingLogo = true);
+    try {
+      final url = await ref.read(companyServiceProvider).uploadLogo(
+            companyId: _existingCompany!.id,
+            bytes: bytes,
+            contentType: contentType,
+          );
+      final updated = _existingCompany!.copyWith(logoUrl: url);
+      await ref.read(companyServiceProvider).updateCompany(updated);
+      if (!mounted) return;
+      setState(() => _existingCompany = updated);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l.logoUploadSuccess), backgroundColor: AppColors.live),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l.errorWithMessage(e)), backgroundColor: AppColors.error),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isUploadingLogo = false);
     }
   }
 
@@ -453,6 +522,57 @@ class _CompanyProfileScreenState
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                     color: _completeness >= 1.0 ? AppColors.live : c.textTertiary,
+                  ),
+                ),
+
+                SizedBox(height: isMobile ? 14 : 24),
+
+                // Logo
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                  decoration: BoxDecoration(
+                    color: c.surface,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: c.border),
+                  ),
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 28,
+                        backgroundColor: AppColors.primary.withOpacity(0.15),
+                        backgroundImage: (_existingCompany?.logoUrl.isNotEmpty ?? false)
+                            ? NetworkImage(_existingCompany!.logoUrl)
+                            : null,
+                        child: (_existingCompany?.logoUrl.isNotEmpty ?? false)
+                            ? null
+                            : Text(
+                                _nameController.text.isNotEmpty ? _nameController.text[0].toUpperCase() : 'U',
+                                style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: 22),
+                              ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(l.logoSectionTitle, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.textPrimary)),
+                            const SizedBox(height: 2),
+                            Text(l.logoHint, style: TextStyle(fontSize: 12, color: c.textTertiary)),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      OutlinedButton(
+                        onPressed: _isUploadingLogo ? null : _pickAndUploadLogo,
+                        child: _isUploadingLogo
+                            ? const SizedBox(
+                                height: 16,
+                                width: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+                              )
+                            : Text((_existingCompany?.logoUrl.isNotEmpty ?? false) ? l.logoChangeButton : l.logoUploadButton),
+                      ),
+                    ],
                   ),
                 ),
 

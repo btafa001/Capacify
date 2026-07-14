@@ -477,9 +477,6 @@ class AppLocalizations {
   String get reportSuccess  => _t('Beitrag gemeldet. Danke für dein Feedback.', 'Post reported. Thank you for your feedback.');
   String get reportError2   => _t('Fehler beim Melden. Bitte erneut versuchen.', 'Error reporting. Please try again.');
 
-  String get titleAvailableSuffix => _t('verfügbar', 'available');
-  String get titleWantedSuffix    => _t('gesucht', 'wanted');
-
   // Trade/Gewerk display name — the German string is always the canonical
   // stored value; this only translates what's shown to the user.
   String tradeName(String trade) {
@@ -545,6 +542,9 @@ class AppLocalizations {
   // Trade-led post titles (lead with the Gewerk, never the poster).
   String postTitleOffer(String trade) => _t('$trade-Kolonne verfügbar', '$trade crew available');
   String postTitleNeed(String trade)  => _t('$trade-Kolonne gesucht', '$trade crew needed');
+  // Team-led post title with headcount (leads with the trade + "Team", not a bare number).
+  String postTitleOfferWithCount(String trade, int count) => _t('$trade-Team mit $count Personen verfügbar', '$trade team of $count available');
+  String postTitleNeedWithCount(String trade, int count)  => _t('$trade-Team mit $count Personen gesucht', '$trade team of $count wanted');
   // Freshness — honest "updated" copy off updatedAt.
   String get updatedTodayLabel      => _t('Aktualisiert heute', 'Updated today');
   String updatedDaysAgo(int n)      => isEn
@@ -584,6 +584,15 @@ class AppLocalizations {
   // everything else a generic one.
   String errorWithMessage(Object e) {
     final s = e.toString().toLowerCase();
+    // App Check first: when enforcement is on but tokens aren't flowing, the
+    // failure can surface either as an explicit app-check error or (for
+    // Firestore/Storage reads) as a plain permission-denied that looks exactly
+    // like a real rules denial. Catch the explicit signal here so an App Check
+    // outage is named for what it is instead of sending you to debug rules.
+    if (s.contains('app-check') || s.contains('appcheck') || s.contains('app check')) {
+      return _t('Sicherheitsprüfung (App Check) fehlgeschlagen. Bitte laden Sie die Seite neu.',
+          'Security check (App Check) failed. Please reload the page.');
+    }
     if (s.contains('permission-denied') || s.contains('permission_denied')) {
       return _t('Dazu haben Sie keine Berechtigung.',
           'You don\'t have permission to do that.');
@@ -708,6 +717,15 @@ class AppLocalizations {
   String get saveErrorRetry      => _t('Fehler beim Speichern. Bitte erneut versuchen.', 'Error saving. Please try again.');
   String get companyProfileTitle    => _t('Unternehmensprofil', 'Company Profile');
   String get companyProfileSubtitle => _t('Präsentieren Sie Ihr Unternehmen auf Capacify', 'Present your company on Capacify');
+  // Logo upload
+  String get logoSectionTitle     => _t('Firmenlogo', 'Company logo');
+  String get logoUploadButton     => _t('Logo hochladen', 'Upload logo');
+  String get logoChangeButton     => _t('Logo ändern', 'Change logo');
+  String get logoHint             => _t('JPG oder PNG, max. 2 MB', 'JPG or PNG, max 2 MB');
+  String get logoSaveProfileFirst => _t('Speichern Sie zuerst Ihr Profil, um ein Logo hochzuladen.', 'Save your profile first to upload a logo.');
+  String get logoFormatError      => _t('Nur JPG- oder PNG-Dateien sind erlaubt.', 'Only JPG or PNG files are allowed.');
+  String get logoSizeError        => _t('Datei zu groß (max. 2 MB).', 'File too large (max 2 MB).');
+  String get logoUploadSuccess    => _t('Logo hochgeladen.', 'Logo uploaded.');
   String get basicInfoSection     => _t('Grundinformationen', 'Basic Information');
   String get tradeBranchLabel     => _t('Gewerk / Branche *', 'Trade / Industry *');
   String get descriptionRequiredLabel => _t('Beschreibung *', 'Description *');
@@ -783,7 +801,8 @@ class AppLocalizations {
   String get startDateChip       => _t('Start', 'Start');
   String get endDateChip         => _t('Ende', 'End');
   String get section4LocationHamburg => _t('4. Standort in Hamburg', '4. Location in Hamburg');
-  String get section5WorkerCount  => _t('5. Anzahl Personen', '5. Number of people');
+  String get section5WorkerCount  => _t('5. Team Größe', '5. Team size');
+  String get teamSizeInlineLabel  => _t('Team Größe', 'Team size');
   String get section6Description  => _t('6. Beschreibung (optional)', '6. Description (optional)');
   String get descriptionExampleHint => _t(
     'z.B. "5 Trockenbauer ab Montag, alle Werkzeuge dabei, Führerschein vorhanden..."',

@@ -19,6 +19,10 @@ dependencies:
   firebase_auth: ^6.1.4
   cloud_firestore: ^6.1.2
   firebase_analytics: ^12.4.2
+  firebase_storage: ^13.4.5
+
+  # Media
+  image_picker: ^1.2.3
 
   # State Management
   flutter_riverpod: ^2.6.1
