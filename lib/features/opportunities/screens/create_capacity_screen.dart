@@ -110,14 +110,14 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
               ? now.add(const Duration(days: 7))
               : now.add(const Duration(days: 14));
 
-      final typeWord = _type == CapacityType.offer ? 'verfügbar' : 'gesucht';
-
       final capacity = CapacityModel(
         id: '',
         type: _type,
         status: CapacityStatus.active,
         availabilityType: _availabilityType,
-        title: '$_workerCount $_selectedTrade $typeWord',
+        title: _type == CapacityType.offer
+            ? l.postTitleOfferWithCount(l.tradeName(_selectedTrade), _workerCount)
+            : l.postTitleNeedWithCount(l.tradeName(_selectedTrade), _workerCount),
         description: _descriptionController.text.trim(),
         trade: _selectedTrade,
         location: _selectedDistrict,
@@ -540,7 +540,7 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                     child: Row(
                       children: [
                         Text(
-                          l.persons,
+                          l.teamSizeInlineLabel,
                           style: TextStyle(
                             color: c.textSecondary,
                             fontSize: 15,
@@ -674,7 +674,9 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                '$_workerCount ${l.tradeName(_selectedTrade)} ${_type == CapacityType.offer ? l.titleAvailableSuffix : l.titleWantedSuffix}',
+                                _type == CapacityType.offer
+                                    ? l.postTitleOfferWithCount(l.tradeName(_selectedTrade), _workerCount)
+                                    : l.postTitleNeedWithCount(l.tradeName(_selectedTrade), _workerCount),
                                 style: TextStyle(
                                   fontSize: 13,
                                   fontWeight: FontWeight.w700,

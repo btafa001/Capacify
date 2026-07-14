@@ -477,9 +477,6 @@ class AppLocalizations {
   String get reportSuccess  => _t('Beitrag gemeldet. Danke für dein Feedback.', 'Post reported. Thank you for your feedback.');
   String get reportError2   => _t('Fehler beim Melden. Bitte erneut versuchen.', 'Error reporting. Please try again.');
 
-  String get titleAvailableSuffix => _t('verfügbar', 'available');
-  String get titleWantedSuffix    => _t('gesucht', 'wanted');
-
   // Trade/Gewerk display name — the German string is always the canonical
   // stored value; this only translates what's shown to the user.
   String tradeName(String trade) {
@@ -545,6 +542,9 @@ class AppLocalizations {
   // Trade-led post titles (lead with the Gewerk, never the poster).
   String postTitleOffer(String trade) => _t('$trade-Kolonne verfügbar', '$trade crew available');
   String postTitleNeed(String trade)  => _t('$trade-Kolonne gesucht', '$trade crew needed');
+  // Team-led post title with headcount (leads with the trade + "Team", not a bare number).
+  String postTitleOfferWithCount(String trade, int count) => _t('$trade-Team mit $count Personen verfügbar', '$trade team of $count available');
+  String postTitleNeedWithCount(String trade, int count)  => _t('$trade-Team mit $count Personen gesucht', '$trade team of $count wanted');
   // Freshness — honest "updated" copy off updatedAt.
   String get updatedTodayLabel      => _t('Aktualisiert heute', 'Updated today');
   String updatedDaysAgo(int n)      => isEn
@@ -783,7 +783,8 @@ class AppLocalizations {
   String get startDateChip       => _t('Start', 'Start');
   String get endDateChip         => _t('Ende', 'End');
   String get section4LocationHamburg => _t('4. Standort in Hamburg', '4. Location in Hamburg');
-  String get section5WorkerCount  => _t('5. Anzahl Personen', '5. Number of people');
+  String get section5WorkerCount  => _t('5. Team Größe', '5. Team size');
+  String get teamSizeInlineLabel  => _t('Team Größe', 'Team size');
   String get section6Description  => _t('6. Beschreibung (optional)', '6. Description (optional)');
   String get descriptionExampleHint => _t(
     'z.B. "5 Trockenbauer ab Montag, alle Werkzeuge dabei, Führerschein vorhanden..."',
