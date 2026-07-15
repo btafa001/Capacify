@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../localization/app_localizations.dart';
 
 class CompanyModel {
   final String id;
@@ -39,6 +40,24 @@ class CompanyModel {
   final int completedCollaborations;
   final int repeatCollaborations;
   final bool contentFlagged;
+  // Why contentFlagged got set server-side (enforceCapacityModeration /
+  // enforceCompanyIntegrity in functions/index.js) — 'moderation' (blocked
+  // word / leaked contact info) or 'impersonation' (name suspiciously close
+  // to an already-verified company). flagDetail carries the matched verified
+  // company's name for the impersonation case. Admin-display only — never
+  // written by the client, and clearing contentFlagged (approve) is all the
+  // moderation queue needs regardless of which reason is shown.
+  final String flagReason;
+  final String flagDetail;
+  // Admin-only "pause" — a deliberate moderation consequence (distinct from
+  // contentFlagged, which is auto-detected). While true: the company can't
+  // publish new posts (firestore.rules) and its existing posts are hidden
+  // from the public feed (see CapacityModel.posterSuspended). Never
+  // self-settable — excluded from toFirestoreForUpdate, pinned admin-only in
+  // firestore.rules. suspensionReason is shown to the company itself so the
+  // consequence isn't a silent black box.
+  final bool suspended;
+  final String suspensionReason;
   // Opt-in (default false, GDPR) for the retention emails — match alerts +
   // weekly digest. Managed via CompanyService.setEmailOptIn, never touched by
   // the profile-save path, so it can't be clobbered by a stale model.
@@ -57,6 +76,12 @@ class CompanyModel {
   // Last time the company was active (stamped on login) — a trust/liveness
   // signal ("Zuletzt aktiv heute") on company profiles.
   final DateTime? lastActiveAt;
+  // Referral attribution — the inviting company's id, captured from a
+  // ?ref={companyId} link at registration (see auth_service.dart). Stamped
+  // once at creation, never editable. '' for the overwhelming majority of
+  // companies (organic signups). Powers the referrer's "Empfehlungen: Nx"
+  // count in Settings — see companyService.countReferrals.
+  final String referredBy;
 
   bool get isVerified => verificationStatus == 'verified';
   double get avgRating => ratingCount > 0 ? ratingSum / ratingCount : 0.0;
@@ -104,6 +129,22 @@ class CompanyModel {
 
   bool get isProfileComplete => profileCompleteness >= 1.0;
 
+  /// Which of the fields that gate isProfileComplete are still missing, as a
+  /// display-ready comma list — used to tell a company EXACTLY what to add
+  /// instead of a generic "complete your profile" notice (dashboard_screen.dart's
+  /// post-gate dialog, interest_modal.dart's contact-gate notice). Still
+  /// relevant even now that the profile form requires these fields going
+  /// forward — a company saved under the old, more lenient validators may
+  /// already have one empty on file.
+  String missingCompletenessFieldsLabel(AppLocalizations l) {
+    final missing = <String>[];
+    if (description.trim().isEmpty) missing.add(l.missingFieldDescription);
+    if (phone.trim().isEmpty) missing.add(l.missingFieldPhoneCompany);
+    if (address.trim().isEmpty) missing.add(l.missingFieldAddress);
+    if (trades.isEmpty) missing.add(l.missingFieldTrades);
+    return missing.join(', ');
+  }
+
   CompanyModel({
     required this.id,
     required this.ownerId,
@@ -132,14 +173,51 @@ class CompanyModel {
     this.completedCollaborations = 0,
     this.repeatCollaborations = 0,
     this.contentFlagged = false,
+    this.flagReason = '',
+    this.flagDetail = '',
+    this.suspended = false,
+    this.suspensionReason = '',
     this.emailOptIn = false,
     this.createdAt,
     this.lastActiveAt,
+    this.referredBy = '',
     this.onboardingSource = 'self',
     this.onboardingAdminUid = '',
     this.invitedAt,
     this.lastNameChangeAt,
   });
+
+  /// A minimal, partial instance built from just the identity snapshot a
+  /// visible/discreet capacity post carries (id/name/logoUrl) — enough to
+  /// open showCompanyDetailDialog before the real doc has loaded.
+  /// CompanyDetailScreen re-fetches the live doc via companyByIdProvider and
+  /// falls back to whatever it was handed (`companyAsync.value ?? company`),
+  /// so this self-corrects the instant the live stream resolves; every other
+  /// field here is a safe, empty placeholder, never actually displayed for
+  /// more than a frame.
+  factory CompanyModel.shellFor({
+    required String id,
+    required String name,
+    String logoUrl = '',
+  }) {
+    return CompanyModel(
+      id: id,
+      ownerId: id,
+      name: name,
+      description: '',
+      website: '',
+      email: '',
+      phone: '',
+      address: '',
+      city: '',
+      postalCode: '',
+      country: '',
+      employees: '',
+      trades: const [],
+      services: const [],
+      logoUrl: logoUrl,
+    );
+  }
 
   CompanyModel copyWith({
     String? id,
@@ -169,6 +247,10 @@ class CompanyModel {
     int? completedCollaborations,
     int? repeatCollaborations,
     bool? contentFlagged,
+    String? flagReason,
+    String? flagDetail,
+    bool? suspended,
+    String? suspensionReason,
     bool? emailOptIn,
     DateTime? createdAt,
     String? onboardingSource,
@@ -204,6 +286,10 @@ class CompanyModel {
       completedCollaborations: completedCollaborations ?? this.completedCollaborations,
       repeatCollaborations: repeatCollaborations ?? this.repeatCollaborations,
       contentFlagged: contentFlagged ?? this.contentFlagged,
+      flagReason: flagReason ?? this.flagReason,
+      flagDetail: flagDetail ?? this.flagDetail,
+      suspended: suspended ?? this.suspended,
+      suspensionReason: suspensionReason ?? this.suspensionReason,
       emailOptIn: emailOptIn ?? this.emailOptIn,
       createdAt: createdAt ?? this.createdAt,
       onboardingSource: onboardingSource ?? this.onboardingSource,
@@ -252,9 +338,14 @@ class CompanyModel {
       completedCollaborations: data['completedCollaborations'] ?? 0,
       repeatCollaborations: data['repeatCollaborations'] ?? 0,
       contentFlagged: data['contentFlagged'] as bool? ?? false,
+      flagReason: data['flagReason'] as String? ?? '',
+      flagDetail: data['flagDetail'] as String? ?? '',
+      suspended: data['suspended'] as bool? ?? false,
+      suspensionReason: data['suspensionReason'] as String? ?? '',
       emailOptIn: data['emailOptIn'] as bool? ?? false,
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
       lastActiveAt: (data['lastActiveAt'] as Timestamp?)?.toDate(),
+      referredBy: data['referredBy'] as String? ?? '',
       // Pre-existing docs have no onboardingSource — default to 'self', the
       // same backward-compat pattern used for legacy 'trade' above.
       onboardingSource: data['onboardingSource'] as String? ?? 'self',
@@ -289,6 +380,7 @@ class CompanyModel {
       'contentFlagged': contentFlagged,
       'emailOptIn': emailOptIn,
       'createdAt': FieldValue.serverTimestamp(),
+      'referredBy': referredBy,
       'onboardingSource': onboardingSource,
       'onboardingAdminUid': onboardingAdminUid,
       // invitedAt is intentionally NOT written here — it stays null until an

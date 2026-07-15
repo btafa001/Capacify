@@ -7,6 +7,7 @@ import '../../../core/models/capacity_owner_model.dart';
 import '../../../core/models/contact_request_model.dart';
 import '../../../core/services/capacity_provider.dart';
 import '../../../core/services/contact_request_provider.dart';
+import '../../../core/services/chat_provider.dart';
 import '../../../core/services/auth_provider.dart';
 import '../../../core/services/company_provider.dart';
 import '../../../core/services/analytics_service.dart';
@@ -34,9 +35,36 @@ Future<void> showInterestModal({
     snack(l.completeProfileToRequestNotice, AppColors.error);
     return;
   }
+  // Client-side pre-check matching firestore.rules' hard requirement
+  // (email_verified == true on contact_requests create) — without this, an
+  // unverified user reaches Send and gets a raw generic error instead of an
+  // actionable prompt. Same copy/service call as email_verification_banner.dart.
+  if (!user.emailVerified) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(l.verifyEmailBannerBody),
+      backgroundColor: AppColors.warning,
+      duration: const Duration(seconds: 8),
+      action: SnackBarAction(
+        label: l.resendVerificationButton,
+        onPressed: () async {
+          try {
+            await ref.read(authServiceProvider).resendVerificationEmail();
+            snack(l.verificationEmailResent, AppColors.live);
+          } catch (e) {
+            snack(l.errorWithMessage(e), AppColors.error);
+          }
+        },
+      ),
+    ));
+    return;
+  }
   final requester = await ref.read(myCompanyProvider(user.uid).future);
-  if (requester == null || !requester.isProfileComplete) {
+  if (requester == null) {
     snack(l.completeProfileToRequestNotice, AppColors.error);
+    return;
+  }
+  if (!requester.isProfileComplete) {
+    snack(l.completeProfileMissingFieldsBody(requester.missingCompletenessFieldsLabel(l)), AppColors.error);
     return;
   }
   if (!context.mounted) return;
@@ -76,6 +104,7 @@ Future<void> showInterestModal({
     pageBuilder: (ctx, _, __) {
       String? sentStatus = existing?.status; // null | pending | declined | granted
       bool sending = false;
+      bool urgent = false;
 
       void openChat() {
         Navigator.pop(ctx);
@@ -109,18 +138,60 @@ Future<void> showInterestModal({
                     if (sending) return;
                     setState(() => sending = true);
                     try {
-                      await ref
+                      final text = messageController.text;
+                      final status = await ref
                           .read(contactRequestServiceProvider)
                           .requestContact(
                             post: capacity,
                             requester: requester,
-                            message: messageController.text,
+                            message: text,
+                            urgent: urgent,
                           );
                       ref
                           .read(capacityServiceProvider)
                           .incrementInterestCount(capacity.id);
                       AnalyticsService.logEvent('message_sent_to_poster',
                           parameters: {'trade': capacity.trade});
+
+                      if (status == 'granted') {
+                        // Visible/discreet post — instant reveal, no Accept
+                        // step. Use the capacity's OWN already-public poster
+                        // fields (not a re-fetch of the locked sidecar, which
+                        // would race Firestore's read-after-write for this
+                        // just-created doc), bridge the composed message into
+                        // the actual chat thread, then open it directly —
+                        // otherwise "first message instantly opens chat"
+                        // would land on an empty conversation.
+                        final posterId = capacity.posterCompanyId!;
+                        final participants = [requester.id, posterId];
+                        await ref.read(chatServiceProvider).ensureChat(
+                              chatId: requestId,
+                              participants: participants,
+                              postId: capacity.id,
+                            );
+                        await ref.read(chatServiceProvider).sendMessage(
+                              chatId: requestId,
+                              senderId: requester.id,
+                              participants: participants,
+                              text: text,
+                            );
+                        if (!ctx.mounted) return;
+                        Navigator.pop(ctx);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => ChatScreen(
+                              chatId: requestId,
+                              myCompanyId: requester.id,
+                              otherCompanyId: posterId,
+                              otherCompanyName: capacity.posterCompanyName ?? '',
+                              postId: capacity.id,
+                            ),
+                          ),
+                        );
+                        return;
+                      }
+
                       setState(() {
                         sentStatus = 'pending';
                         sending = false;
@@ -156,6 +227,8 @@ Future<void> showInterestModal({
                       messageController: messageController,
                       onChanged: () => setState(() {}),
                       onSend: send,
+                      urgent: urgent,
+                      onUrgentChanged: (v) => setState(() => urgent = v),
                     );
                   }
 
@@ -199,6 +272,8 @@ class _ComposeBody extends StatelessWidget {
   final TextEditingController messageController;
   final VoidCallback onChanged;
   final VoidCallback onSend;
+  final bool urgent;
+  final ValueChanged<bool> onUrgentChanged;
 
   const _ComposeBody({
     required this.capacity,
@@ -207,6 +282,8 @@ class _ComposeBody extends StatelessWidget {
     required this.messageController,
     required this.onChanged,
     required this.onSend,
+    required this.urgent,
+    required this.onUrgentChanged,
   });
 
   @override
@@ -214,7 +291,11 @@ class _ComposeBody extends StatelessWidget {
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
     final flagged = containsContactInfo(messageController.text);
-    final canSend = messageController.text.trim().isNotEmpty && !sending;
+    // Disabling Send (not a "send anyway" checkbox) — the Firestore rule that
+    // backs this has no override path, so a checkbox would be a false
+    // affordance that still fails server-side. This makes the client agree
+    // with the server it already talks to.
+    final canSend = messageController.text.trim().isNotEmpty && !sending && !flagged;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -291,16 +372,43 @@ class _ComposeBody extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(bottom: 4),
             child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Icon(Icons.info_outline, size: 14, color: AppColors.warning),
+              const Icon(Icons.block, size: 14, color: AppColors.error),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(l.interestContainsContactWarning,
                     style: const TextStyle(
-                        fontSize: 11, color: AppColors.warning, height: 1.35)),
+                        fontSize: 11, color: AppColors.error, height: 1.35)),
               ),
             ]),
           ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 4),
+        InkWell(
+          onTap: () => onUrgentChanged(!urgent),
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(children: [
+              SizedBox(
+                width: 22,
+                height: 22,
+                child: Checkbox(
+                  value: urgent,
+                  onChanged: (v) => onUrgentChanged(v ?? false),
+                  activeColor: AppColors.warning,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+              const SizedBox(width: 10),
+              const Text('🔥', style: TextStyle(fontSize: 13)),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(l.markUrgentLabel,
+                    style: TextStyle(fontSize: 13, color: c.textSecondary, fontWeight: FontWeight.w600)),
+              ),
+            ]),
+          ),
+        ),
+        const SizedBox(height: 8),
         SizedBox(
           width: double.infinity,
           child: ElevatedButton.icon(

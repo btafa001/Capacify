@@ -4,6 +4,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/models/company_model.dart';
 import '../../../core/services/company_provider.dart';
 import '../../../shared/widgets/capacify_logo.dart';
+import '../../../shared/widgets/company_logo_avatar.dart';
 import '../../../shared/widgets/star_rating.dart';
 import '../../../shared/widgets/trade_pill_dropdown.dart';
 import '../../../core/localization/app_localizations.dart';
@@ -321,18 +322,15 @@ class _CompanyCardState extends State<_CompanyCard> {
                         // Avatar + verification badge
                         Row(
                           children: [
-                            Container(
-                              width: 42, height: 42,
-                              decoration: BoxDecoration(
-                                color: AppColors.primary.withOpacity(0.12),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Center(
-                                child: Text(
-                                  company.name.isNotEmpty ? company.name[0].toUpperCase() : 'U',
-                                  style: const TextStyle(color: AppColors.primary, fontSize: 18, fontWeight: FontWeight.w900),
-                                ),
-                              ),
+                            // CompanyLogoAvatar (not a raw Image.network) — see its
+                            // doc comment for why: a plain Image.network here
+                            // reproduces the huge-grey-box Flutter-Web bug that
+                            // company_detail_screen.dart's hero avatar and the feed
+                            // cards already had to work around.
+                            CompanyLogoAvatar(
+                              logoUrl: company.logoUrl,
+                              companyName: company.name,
+                              radius: 21,
                             ),
                             const Spacer(),
                             _VerificationBadge(status: company.verificationStatus),

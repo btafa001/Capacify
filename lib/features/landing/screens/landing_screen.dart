@@ -246,8 +246,18 @@ class _DesktopHero extends StatelessWidget {
 /// Real "proof of life" — live company + capacity counts (never fabricated).
 /// Falls back to the static location/trades line while loading or if both are
 /// zero, so an empty market never advertises "0 Firmen".
+///
+/// Below [_foundingMemberFloor] companies, the raw numbers are hidden in
+/// favor of a "founding member" framing instead — the audit's own finding:
+/// showing "3 aktiv · 5 Firmen" directly beneath four polished example cards
+/// reads as a ghost town rather than proof of life. The honest fix isn't to
+/// fabricate a bigger number (never done here) but to reframe what a small,
+/// real number MEANS — exclusive and early, not empty — until it's actually
+/// large enough that showing it plainly works in the product's favor.
 class _MarketPulseRow extends ConsumerWidget {
   const _MarketPulseRow();
+
+  static const _foundingMemberFloor = 25;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -265,6 +275,16 @@ class _MarketPulseRow extends ConsumerWidget {
         Icon(Icons.construction_outlined, size: 14, color: c.textTertiary),
         const SizedBox(width: 5),
         Text(l.heroStatTrades(kSelectableTradeCount), style: TextStyle(fontSize: 12, color: c.textTertiary, fontWeight: FontWeight.w500)),
+      ]);
+    }
+    if (pulse.companies < _foundingMemberFloor) {
+      return Row(mainAxisSize: MainAxisSize.min, children: [
+        const Icon(Icons.rocket_launch_outlined, size: 15, color: AppColors.primary),
+        const SizedBox(width: 7),
+        Flexible(
+          child: Text(l.foundingMemberPulseLabel(_foundingMemberFloor),
+              style: const TextStyle(fontSize: 13, color: AppColors.primary, fontWeight: FontWeight.w800)),
+        ),
       ]);
     }
     return Wrap(spacing: 18, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
@@ -372,36 +392,83 @@ class _CardGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
+    // 3 visible (the actual default — see CapacityVisibilityMode.visible) +
+    // 1 anonymous (opt-in), matching the mix a real visitor sees rather than
+    // the old "everything is locked" look. Company names reused from
+    // _MockupContact/_UnlockShowcaseSection for consistency across the page.
     final cards = [
-      _CardData(offer: true,  title: l.card1Title, trade: 'Elektro',          loc: 'Hamburg-Mitte', avail: l.card1Avail, n: 3, live: true,  ago: l.ago(4),  verified: true),
-      _CardData(offer: false, title: l.card2Title, trade: 'Dach',              loc: 'Hamburg-Nord',  avail: l.card2Avail, n: 2, live: false, ago: l.ago(12)),
-      _CardData(offer: true,  title: l.card3Title, trade: 'Trockenbau',        loc: 'Eimsbüttel',    avail: l.card3Avail, n: 5, live: true,  ago: l.ago(18)),
-      _CardData(offer: false, title: l.card4Title, trade: 'SHK', loc: 'Bergedorf',     avail: l.card4Avail, n: 4, live: false, ago: l.ago(31)),
+      _CardData(offer: true,  title: l.card1Title, trade: 'Elektro',          loc: 'Hamburg-Mitte', avail: l.card1Avail, n: 3, live: true,  ago: l.ago(4),  verified: true, companyName: 'Elektro Schmidt GmbH'),
+      _CardData(offer: false, title: l.card2Title, trade: 'Dach',              loc: 'Hamburg-Nord',  avail: l.card2Avail, n: 2, live: false, ago: l.ago(12), anonymous: true),
+      _CardData(offer: true,  title: l.card3Title, trade: 'Trockenbau',        loc: 'Eimsbüttel',    avail: l.card3Avail, n: 5, live: true,  ago: l.ago(18), companyName: 'Bauteam Nord GmbH'),
+      _CardData(offer: false, title: l.card4Title, trade: 'SHK', loc: 'Bergedorf',     avail: l.card4Avail, n: 4, live: false, ago: l.ago(31), verified: true, companyName: 'SHK Wagner GmbH'),
     ];
     // Cascade the cards in on load — the hero "feed" populating itself. Subtle
     // stagger (~90ms apart), one-shot; premium load-in, not a gimmick.
     Widget staggered(int i, _CardData d) =>
         EntryFade(delay: Duration(milliseconds: i * 90), child: _Card(d: d));
-    if (mobile) {
-      return Column(children: [staggered(0, cards[0]), const SizedBox(height: 12), staggered(1, cards[1])]);
-    }
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(child: Column(children: [staggered(0, cards[0]), const SizedBox(height: 16), staggered(2, cards[2])])),
-        const SizedBox(width: 14),
-        Expanded(child: Column(children: [staggered(1, cards[1]), const SizedBox(height: 16), staggered(3, cards[3])])),
-      ],
+    final grid = mobile
+        ? Column(children: [staggered(0, cards[0]), const SizedBox(height: 12), staggered(1, cards[1])])
+        : Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: Column(children: [staggered(0, cards[0]), const SizedBox(height: 16), staggered(2, cards[2])])),
+              const SizedBox(width: 14),
+              Expanded(child: Column(children: [staggered(1, cards[1]), const SizedBox(height: 16), staggered(3, cards[3])])),
+            ],
+          );
+
+    // Chrome frame — frames the 4 example cards as a window into the live
+    // product rather than cards floating loose on the page. Deliberately no
+    // stats/numbers in this header (that's what _MarketPulseRow is for, and
+    // it already handles the "too few real companies" case honestly) — this
+    // is pure packaging, not a second data surface.
+    return Container(
+      padding: EdgeInsets.all(mobile ? 12 : 16),
+      decoration: BoxDecoration(
+        // Opaque — the hero has a dot-grid painted behind it (see
+        // DotGridPainter above), and a translucent panel here let it bleed
+        // through the "window", undermining the solid-chrome effect.
+        color: c.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: c.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.only(bottom: 12),
+            decoration: BoxDecoration(border: Border(bottom: BorderSide(color: c.border, width: 0.5))),
+            child: Row(
+              children: [
+                const CapacifySymbol(size: 18),
+                const SizedBox(width: 8),
+                Text(
+                  l.heroFrameLabel,
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.0, color: c.textTertiary),
+                ),
+                const Spacer(),
+                Container(width: 6, height: 6, decoration: const BoxDecoration(color: AppColors.live, shape: BoxShape.circle)),
+                const SizedBox(width: 6),
+                Text(l.liveLabel, style: const TextStyle(color: AppColors.live, fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 0.4)),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          grid,
+        ],
+      ),
     );
   }
 }
 
 class _CardData {
-  final bool offer, live, verified;
+  final bool offer, live, verified, anonymous;
   final String title, trade, loc, avail, ago;
+  final String? companyName;
   final int n;
-  const _CardData({required this.offer, required this.title, required this.trade, required this.loc, required this.avail, required this.n, required this.live, required this.ago, this.verified = false});
+  const _CardData({required this.offer, required this.title, required this.trade, required this.loc, required this.avail, required this.n, required this.live, required this.ago, this.verified = false, this.anonymous = false, this.companyName});
 }
 
 class _Card extends StatefulWidget {
@@ -472,11 +539,47 @@ class _CardState extends State<_Card> {
                         ),
                       ],
                       const Spacer(),
-                      Icon(Icons.lock_outline, size: 14, color: c.textTertiary),
+                      if (widget.d.anonymous)
+                        Icon(Icons.lock_outline, size: 14, color: c.textTertiary),
                     ],
                   ),
                   const SizedBox(height: 12),
                   Text(widget.d.title, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: c.textPrimary, height: 1.3), maxLines: 2, overflow: TextOverflow.ellipsis),
+                  // Identity row — visible/discreet posts (the default) show
+                  // company name + logo initial directly on the card, same as
+                  // the real feed (see _LiveCapacityCard in
+                  // live_capacity_feed_screen.dart). Anonymous posts hide it
+                  // via Opacity (not a conditional widget) so the row still
+                  // occupies its layout space — otherwise the anonymous card
+                  // ends up shorter than its neighbors and the two-column
+                  // grid below (independent stacked Columns, no shared row
+                  // height) drifts out of alignment.
+                  const SizedBox(height: 8),
+                  Opacity(
+                    opacity: widget.d.anonymous ? 0 : 1,
+                    child: Row(children: [
+                      CircleAvatar(
+                        radius: 9,
+                        backgroundColor: AppColors.primary.withOpacity(0.15),
+                        child: Text(
+                          (widget.d.companyName?.isNotEmpty ?? false) ? widget.d.companyName![0].toUpperCase() : ' ',
+                          style: const TextStyle(color: AppColors.primary, fontSize: 9, fontWeight: FontWeight.w900),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          widget.d.companyName ?? ' ',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: c.textSecondary),
+                        ),
+                      ),
+                      if (widget.d.verified) ...[
+                        const SizedBox(width: 4),
+                        const Icon(Icons.verified, size: 13, color: AppColors.live),
+                      ],
+                    ]),
+                  ),
                   const SizedBox(height: 10),
                   Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: c.surfaceVariant, borderRadius: BorderRadius.circular(4)), child: Text(widget.d.trade, style: TextStyle(fontSize: 12, color: c.textSecondary, fontWeight: FontWeight.w600))),
                   const SizedBox(height: 10),
@@ -914,7 +1017,7 @@ class _LiveStep extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
-          Text(desc, style: TextStyle(fontSize: 13, color: c.textSecondary, height: 1.55)),
+          Text(desc, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: c.textSecondary, height: 1.45)),
         ],
       ),
     );
@@ -933,7 +1036,10 @@ class _MockupFrame extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     return Container(
-      height: 136,
+      // _MockupPost is the tightest fit (title + badge + team line + CTA
+      // button) — 136 clipped its CTA by ~2px once the button's hover/pulse
+      // Transform.scale pushed slightly past the Column's measured bounds.
+      height: 146,
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -1044,6 +1150,16 @@ class _MiniFeedRow extends StatelessWidget {
         border: Border(left: BorderSide(color: color, width: 3)),
       ),
       child: Row(children: [
+        // The offer/need badge — the one signal every real feed card leads
+        // with (see _FeedBadge in live_capacity_feed_screen.dart). Was
+        // accepted as a parameter here but never actually rendered, so this
+        // mini row silently dropped the single most distinguishing detail.
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+          decoration: BoxDecoration(color: color.withOpacity(0.15), borderRadius: BorderRadius.circular(3)),
+          child: Text(label, style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.w900, color: color, letterSpacing: 0.2)),
+        ),
+        const SizedBox(width: 6),
         Expanded(child: Text(trade, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: c.textPrimary), overflow: TextOverflow.ellipsis)),
         const SizedBox(width: 6),
         Text(loc, style: TextStyle(fontSize: 10, color: c.textTertiary)),

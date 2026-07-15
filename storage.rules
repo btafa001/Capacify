@@ -1,24 +1,27 @@
 rules_version = '2';
 
-// Cloud Storage for Firebase — LOCKED.
+// Cloud Storage for Firebase.
 //
-// The app does not use Storage (no firebase_storage dependency, no uploads or
-// downloads). Firebase auto-provisioned this bucket with default rules that
-// carry an expiry date, which is what triggers the "client access expiring"
-// email. These permanent rules deny all client access, so nothing can read or
-// write the bucket and the expiry warning goes away.
+// company_logos/{companyId}/{fileName} is the only path in use — one logo per
+// company, publicly readable (shown on the profile, feed cards, directory).
 //
-// When Storage is actually used later (e.g. company logo uploads), replace the
-// deny-all below with scoped rules, for example:
-//   match /company_logos/{companyId}/{fileName} {
-//     allow read: if true;                                  // logos shown publicly
-//     allow write: if request.auth != null                  // owner-only upload
-//       && request.auth.uid == companyId
-//       && request.resource.size < 2 * 1024 * 1024          // 2 MB cap
-//       && request.resource.contentType.matches('image/.*');
-//   }
+// No client write path — tried owner-only direct writes first (auth.uid ==
+// companyId + a size/content-type check), and repeatedly hit "unauthorized"
+// regardless of what was actually being uploaded. Root cause: a confirmed
+// FlutterFire Web bug (flutterfire#12607) where Reference.putData() on
+// Flutter Web doesn't reliably transmit SettableMetadata (contentType) with
+// the upload — and evidently other request.resource fields checked here
+// (most likely size) are just as unreliable from a web client, since removing
+// the contentType check alone didn't fix it either. Uploads now go through
+// the uploadCompanyLogo Cloud Function (functions/index.js), which writes via
+// the Admin SDK — that bypasses these rules entirely, so no client-side
+// metadata transmission is involved at any point. Hence: read-only here.
 service firebase.storage {
   match /b/{bucket}/o {
+    match /company_logos/{companyId}/{fileName} {
+      allow read: if true;
+      allow write: if false;
+    }
     match /{allPaths=**} {
       allow read, write: if false;
     }

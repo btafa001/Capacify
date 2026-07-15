@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/models/company_model.dart';
 import '../../../core/services/auth_provider.dart';
 import '../../../core/services/company_provider.dart';
+import '../../../core/services/company_service.dart' show InvalidLogoFileException;
 import '../../../shared/widgets/custom_text_field.dart';
 import '../../../shared/widgets/star_rating.dart';
 import '../../../shared/widgets/milestone.dart';
+import '../../../shared/widgets/company_logo_avatar.dart';
 import '../../../core/services/capacity_provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/utils/content_moderation.dart';
@@ -56,6 +59,7 @@ class _CompanyProfileScreenState
   bool _isLoading = false;
   bool _isSaving = false;
   bool _verifyingVat = false;
+  bool _uploadingLogo = false;
   String? _errorMessage;
   String? _successMessage;
   CompanyModel? _existingCompany;
@@ -94,6 +98,66 @@ class _CompanyProfileScreenState
       }
     } finally {
       if (mounted) setState(() => _verifyingVat = false);
+    }
+  }
+
+  String _guessMimeType(String name) {
+    final lower = name.toLowerCase();
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.gif')) return 'image/gif';
+    return 'application/octet-stream';
+  }
+
+  /// Uploads straight to Storage + Firestore as soon as a file is picked —
+  /// kept out of the main _save() flow (same reasoning as setEmailOptIn) so
+  /// it works even mid-edit and doesn't wait on the rest of the form's
+  /// validation. Only ever callable once the company already exists (see the
+  /// section's own build()-time gating) — Storage's write rule keys off the
+  /// company already existing being irrelevant to it, but a logo for a
+  /// not-yet-created company doesn't make sense product-wise either.
+  Future<void> _pickAndUploadLogo() async {
+    final l = AppLocalizations.of(context);
+    final company = _existingCompany;
+    if (company == null) return;
+    try {
+      // Downscaled to a logo-appropriate size before it ever reaches the size
+      // check below — without maxWidth/maxHeight, a straight-from-camera photo
+      // (often 3-8 MB at full resolution) kept its original pixel dimensions
+      // regardless of imageQuality (which only compresses JPEG/WEBP, not PNG),
+      // so real photos were routinely rejected by the size cap. 512px is well
+      // above anything the avatar is ever displayed at (44px radius, even at
+      // 2x/3x DPI), so this never visibly softens the logo.
+      final picked = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 512,
+        maxHeight: 512,
+        imageQuality: 90,
+      );
+      if (picked == null) return;
+      final bytes = await picked.readAsBytes();
+      final contentType = picked.mimeType ?? _guessMimeType(picked.name);
+      setState(() => _uploadingLogo = true);
+      final service = ref.read(companyServiceProvider);
+      final url = await service.uploadLogo(
+          companyId: company.id, bytes: bytes, contentType: contentType);
+      await service.updateLogoUrl(company.id, url);
+      if (mounted) {
+        setState(() => _existingCompany = company.copyWith(logoUrl: url));
+      }
+    } on InvalidLogoFileException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(e.message), backgroundColor: AppColors.error));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(l.errorWithMessage(e)), backgroundColor: AppColors.error));
+      }
+    } finally {
+      if (mounted) setState(() => _uploadingLogo = false);
     }
   }
 
@@ -264,11 +328,18 @@ class _CompanyProfileScreenState
       final companyId = _existingCompany?.id ?? user.uid;
 
       final vatNumber = _vatNumberController.text.trim();
-      // Never auto-downgrade a company an admin already verified — only
-      // derive 'pending'/'none' from the VAT field when not already verified.
-      final verificationStatus = _existingCompany?.verificationStatus == 'verified'
-          ? 'verified'
-          : (vatNumber.isNotEmpty ? 'pending' : 'none');
+      // Captured before _existingCompany is overwritten below — used after
+      // the save succeeds to decide whether a fresh VIES check is warranted.
+      final previousVatNumber = _existingCompany?.vatNumber ?? '';
+      // verificationStatus is no longer derived client-side from "is the VAT
+      // field non-empty" — that let anyone show a real "Verifizierung
+      // ausstehend" trust badge just by typing any string into the field,
+      // with the actual VIES check never having run. 'pending' is now
+      // reachable ONLY via the verifyMyCompany Cloud Function after a real
+      // check (see firestore.rules + _maybeVerifyVat below); a profile save
+      // simply preserves whatever verificationStatus the company already had
+      // ('none' for a brand-new one).
+      final verificationStatus = _existingCompany?.verificationStatus ?? 'none';
 
       final company = CompanyModel(
         id: companyId,
@@ -330,6 +401,29 @@ class _CompanyProfileScreenState
           _existingCompany = company;
           _savedSnapshot = _snapshot(); // now clean → disable Save until a change
         });
+
+        // A VAT number is on file and either just changed or was never
+        // actually checked (verificationStatus stayed 'none') — kick off the
+        // real VIES check right away rather than leaving it sitting at
+        // 'none' until the company happens to separately press "Automatisch
+        // prüfen". Runs AFTER the setState above so its own refresh (via
+        // _loadExistingCompany) isn't immediately clobbered by it. Best-effort:
+        // VIES downtime shouldn't block a profile save that already
+        // succeeded; the manual button and founder review queue remain the
+        // fallback either way.
+        final vatNeedsCheck = vatNumber.isNotEmpty &&
+            verificationStatus != 'verified' &&
+            (vatNumber != previousVatNumber || verificationStatus == 'none');
+        if (vatNeedsCheck) {
+          try {
+            await FirebaseFunctions.instanceFor(region: 'europe-west3')
+                .httpsCallable('verifyMyCompany')
+                .call();
+            await _loadExistingCompany(); // pick up the real post-check status
+          } catch (_) {
+            // Non-fatal — same fallback as the manual verify button.
+          }
+        }
 
         // Wow moment: profile complete (once) — the activation milestone that
         // unlocks visibility + posting.
@@ -457,6 +551,63 @@ class _CompanyProfileScreenState
                 ),
 
                 SizedBox(height: isMobile ? 14 : 24),
+
+                // Logo — only offered once the company actually exists (a
+                // logo for a not-yet-created profile doesn't make sense, and
+                // Storage's path convention keys off the owner's own uid
+                // regardless, so there's nothing to upload TO yet). Uploads
+                // straight away rather than waiting on the Save button, same
+                // reasoning as the emailOptIn toggle elsewhere.
+                if (_existingCompany != null) ...[
+                  Center(
+                    child: Column(
+                      children: [
+                        GestureDetector(
+                          onTap: _uploadingLogo ? null : _pickAndUploadLogo,
+                          child: Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              CompanyLogoAvatar(
+                                logoUrl: _existingCompany!.logoUrl,
+                                companyName: _existingCompany!.name,
+                                radius: 44,
+                              ),
+                              if (_uploadingLogo)
+                                const Positioned.fill(
+                                  child: DecoratedBox(
+                                    decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.black38),
+                                    child: Center(
+                                      child: SizedBox(
+                                        width: 24,
+                                        height: 24,
+                                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              Positioned(
+                                bottom: 0,
+                                right: 0,
+                                child: Container(
+                                  padding: const EdgeInsets.all(6),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.primary,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: c.background, width: 2),
+                                  ),
+                                  child: const Icon(Icons.camera_alt_outlined, size: 14, color: Colors.white),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(l.logoUploadHint, style: TextStyle(fontSize: 12, color: c.textTertiary)),
+                      ],
+                    ),
+                  ),
+                  SizedBox(height: isMobile ? 14 : 20),
+                ],
 
                 if (_existingCompany != null) ...[
                   Container(
@@ -666,11 +817,11 @@ class _CompanyProfileScreenState
                     Expanded(
                       child: CustomTextField(
                         fieldKey: _phoneFieldKey,
-                        label: l.phoneLabel,
+                        label: l.companyPhoneRequiredLabel,
                         hint: l.phoneHint,
                         controller: _phoneController,
                         keyboardType: TextInputType.phone,
-                        validator: (v) => Validators.phone(v, l),
+                        validator: (v) => Validators.phone(v, l, required: true),
                       ),
                     ),
                   ],
@@ -692,9 +843,10 @@ class _CompanyProfileScreenState
                 SizedBox(height: isMobile ? 10 : 16),
 
                 CustomTextField(
-                  label: l.addressLabel,
+                  label: l.companyAddressRequiredLabel,
                   hint: l.addressHint,
                   controller: _addressController,
+                  validator: (v) => (v == null || v.trim().isEmpty) ? l.required : null,
                 ),
 
                 SizedBox(height: isMobile ? 12 : 20),

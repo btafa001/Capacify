@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/services/auth_provider.dart';
+import '../../../core/services/form_draft_service.dart';
 import '../../../core/utils/validators.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../shared/widgets/custom_text_field.dart';
@@ -37,6 +39,14 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   String? _errorMessage;
   int _passwordStrength = 0;
 
+  // Draft-save (#4 persona finding: interrupted mid-registration loses
+  // everything typed). Password is deliberately NEVER persisted. Periodic
+  // rather than per-keystroke — covers backgrounding/interruption without a
+  // debounce timer on every field.
+  static const _draftKey = 'draft_register';
+  Timer? _draftTimer;
+  bool _registered = false;
+
   @override
   void initState() {
     super.initState();
@@ -44,10 +54,37 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     _passwordController.addListener(() {
       if (mounted) _checkPasswordStrength(_passwordController.text);
     });
+    _restoreDraft();
+    _draftTimer = Timer.periodic(const Duration(seconds: 5), (_) => _saveDraft());
+  }
+
+  void _restoreDraft() {
+    final draft = FormDraftService.load(_draftKey);
+    if (draft == null) return;
+    _firstNameController.text = draft['firstName'] as String? ?? '';
+    _lastNameController.text = draft['lastName'] as String? ?? '';
+    _emailController.text = draft['email'] as String? ?? '';
+    _companyNameController.text = draft['companyName'] as String? ?? '';
+  }
+
+  void _saveDraft() {
+    final firstName = _firstNameController.text.trim();
+    final lastName = _lastNameController.text.trim();
+    final email = _emailController.text.trim();
+    final companyName = _companyNameController.text.trim();
+    if (firstName.isEmpty && lastName.isEmpty && email.isEmpty && companyName.isEmpty) return;
+    FormDraftService.save(_draftKey, {
+      'firstName': firstName,
+      'lastName': lastName,
+      'email': email,
+      'companyName': companyName,
+    });
   }
 
   @override
   void dispose() {
+    _draftTimer?.cancel();
+    if (!_registered) _saveDraft();
     _firstNameController.dispose();
     _lastNameController.dispose();
     _emailController.dispose();
@@ -112,6 +149,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
         companyName: _companyNameController.text.trim(),
       );
       AnalyticsService.logEvent('sign_up', parameters: {'method': 'email'});
+      _registered = true;
+      FormDraftService.clear(_draftKey);
       // Navigate to the dashboard directly rather than popping back to "the
       // first route" and relying on main.dart's authStateProvider-driven
       // home gate to have already swapped to it — that gate only rebuilds

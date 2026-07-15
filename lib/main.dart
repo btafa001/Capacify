@@ -29,7 +29,13 @@ Future<void> _activateAppCheck() async {
     await FirebaseAppCheck.instance.activate(
       webProvider: ReCaptchaV3Provider(kAppCheckRecaptchaSiteKey),
     );
-  } catch (_) {}
+  } catch (e) {
+    // Log rather than silently swallow. A bare `catch (_) {}` here hid a total
+    // App Check activation failure during the enforcement rollout — with
+    // enforcement on, no token means every Firestore/Auth request is rejected
+    // (a full login lockout), so this failure must never be invisible again.
+    debugPrint('App Check activation failed: $e');
+  }
 }
 
 void main() async {

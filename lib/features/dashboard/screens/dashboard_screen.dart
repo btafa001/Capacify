@@ -31,6 +31,7 @@ import '../../admin/screens/admin_screen.dart';
 import '../../../shared/widgets/capacify_logo.dart';
 import '../../../shared/widgets/invite_dialog.dart';
 import '../../../shared/widgets/theme_switcher.dart';
+import '../../../shared/widgets/email_verification_banner.dart';
 import '../../../core/services/analytics_service.dart';
 
 class DashboardScreen extends ConsumerStatefulWidget {
@@ -167,7 +168,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             backgroundColor: cc.surface,
             title: Text(l.completeProfileToPostTitle,
                 style: TextStyle(color: cc.textPrimary, fontWeight: FontWeight.w900, fontSize: 17)),
-            content: Text(l.completeProfileToPostBody,
+            content: Text(l.completeProfileMissingFieldsBody(company.missingCompletenessFieldsLabel(l)),
                 style: TextStyle(color: cc.textSecondary, fontSize: 14, height: 1.5)),
             actions: [
               TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(l.cancel)),
@@ -255,7 +256,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     return Scaffold(
       backgroundColor: c.background,
       drawer: isMobile ? Drawer(backgroundColor: c.surface, width: 280, child: sidebar) : null,
-      body: isMobile ? feedColumn : Row(children: [sidebar, Expanded(child: desktopContent)]),
+      // Persistent across every section/device — posting and contacting are
+      // both gated on email verification (firestore.rules), so this needs to
+      // be visible no matter where in the app the user currently is.
+      body: Column(
+        children: [
+          const EmailVerificationBanner(),
+          Expanded(
+            child: isMobile ? feedColumn : Row(children: [sidebar, Expanded(child: desktopContent)]),
+          ),
+        ],
+      ),
       // Keep the quick-post FAB on the feed (and on mobile); hide it on desktop
       // sub-sections so it doesn't overlap the embedded screen's own controls.
       floatingActionButton: (isMobile || _section == _Section.feed)
@@ -309,10 +320,19 @@ class _SideBar extends ConsumerWidget {
         (ref.watch(flaggedCompaniesProvider).valueOrNull?.length ?? 0);
     // New interest awaiting the poster's response = 'pending' received requests.
     final uid = ref.watch(authStateProvider).valueOrNull?.uid;
-    // Vermittlungen that landed on my posts (all are granted now).
+    // Needs-attention count for the Kontakte nav item — pending requests
+    // (awaiting Accept/Decline) plus granted-but-not-yet-opened ones (auto-
+    // granted visible/discreet posts skip 'pending' entirely, so without the
+    // seenByPoster half this badge would never fire for those). This used to
+    // just be the whole received list's length, so accepting a request — or
+    // simply opening its chat — moved it from pending to granted but never
+    // actually cleared it from the count; mirrors the same filter
+    // my_capacities_screen.dart's per-post badge already uses correctly.
     final vermittlungCount = uid == null
         ? 0
-        : (ref.watch(receivedRequestsProvider(uid)).valueOrNull ?? []).length;
+        : (ref.watch(receivedRequestsProvider(uid)).valueOrNull ?? [])
+            .where((r) => r.status == 'pending' || (r.status == 'granted' && !r.seenByPoster))
+            .length;
     final unreadMessages = uid == null ? 0 : ref.watch(totalUnreadProvider(uid));
 
     return Container(
@@ -461,7 +481,7 @@ class _SideBar extends ConsumerWidget {
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
             child: GestureDetector(
-              onTap: () => showInviteDialog(context),
+              onTap: () => showInviteDialog(context, companyId: uid),
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                 decoration: BoxDecoration(
@@ -645,11 +665,13 @@ class _NavItem extends StatelessWidget {
             Icon(icon, size: 20, color: isActive ? AppColors.primary : c.textSecondary),
             const SizedBox(width: 14),
             Expanded(
+              // No maxLines/ellipsis/softWrap constraint — matches
+              // _NavItemWithBadge below, which already wraps naturally.
+              // 'Gesendete Anfragen' previously got truncated to one
+              // ellipsized line here while 'Erhaltene Anfragen' (same length)
+              // wrapped to two just because it used the other widget.
               child: Text(
                 label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                softWrap: false,
                 style: TextStyle(fontSize: 15, fontWeight: isActive ? FontWeight.w700 : FontWeight.normal, color: isActive ? AppColors.primary : c.textSecondary),
               ),
             ),

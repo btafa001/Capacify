@@ -29,6 +29,8 @@ class _EditCapacityScreenState
   late TextEditingController _descriptionController;
   late TextEditingController _locationController;
   late TextEditingController _workerCountController;
+  late TextEditingController _skillDetailsController;
+  late String _dayRateBand;
 
   late CapacityType _type;
   late String _selectedTrade;
@@ -49,6 +51,8 @@ class _EditCapacityScreenState
     _workerCountController = TextEditingController(
       text: widget.capacity.workerCount.toString(),
     );
+    _skillDetailsController = TextEditingController(text: widget.capacity.skillDetails);
+    _dayRateBand = widget.capacity.dayRateBand;
     _type = widget.capacity.type;
     _selectedTrade = kTrades.contains(widget.capacity.trade)
         ? widget.capacity.trade
@@ -64,6 +68,7 @@ class _EditCapacityScreenState
     _descriptionController.dispose();
     _locationController.dispose();
     _workerCountController.dispose();
+    _skillDetailsController.dispose();
     super.dispose();
   }
 
@@ -112,6 +117,12 @@ class _EditCapacityScreenState
         // non-admin write, so a self-edit can never silently unflag.
         contentFlagged: widget.capacity.contentFlagged ||
             shouldFlagDescription(_descriptionController.text),
+        // Recomputed from the (possibly-edited) location text — see
+        // CapacityModel.coordinatesForLocation; toFirestoreForUpdate() clears
+        // stale coordinates via FieldValue.delete() when this comes back null.
+        districtCoordinates: CapacityModel.coordinatesForLocation(_locationController.text.trim()),
+        dayRateBand: _dayRateBand,
+        skillDetails: _skillDetailsController.text.trim(),
       );
 
       await service.updateCapacity(updatedCapacity);
@@ -332,6 +343,48 @@ class _EditCapacityScreenState
                       ),
                     ),
                   ],
+                ),
+
+                const SizedBox(height: 20),
+
+                CustomTextField(
+                  label: l.skillDetailsLabel,
+                  controller: _skillDetailsController,
+                ),
+
+                const SizedBox(height: 20),
+
+                Text(l.dayRateBandLabel,
+                    style: TextStyle(color: c.textSecondary, fontSize: 14, fontWeight: FontWeight.w500)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [null, ...kDayRateBands].map((band) {
+                    final isSelected = _dayRateBand == (band ?? '');
+                    return GestureDetector(
+                      onTap: () => setState(() => _dayRateBand = band ?? ''),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                        decoration: BoxDecoration(
+                          color: isSelected ? AppColors.primary.withOpacity(0.2) : c.surface,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                            color: isSelected ? AppColors.primary : c.border,
+                            width: isSelected ? 2 : 1,
+                          ),
+                        ),
+                        child: Text(
+                          band == null ? l.dayRateBandUndisclosed : l.dayRateBandName(band),
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: isSelected ? FontWeight.w700 : FontWeight.normal,
+                            color: isSelected ? AppColors.primary : c.textSecondary,
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
                 ),
 
                 const SizedBox(height: 20),

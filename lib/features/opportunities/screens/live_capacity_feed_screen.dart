@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:web/web.dart' as web;
 import '../../../core/theme/app_theme.dart';
 import '../../../core/models/capacity_model.dart';
+import '../../../core/models/company_model.dart';
 import '../../../core/models/report_model.dart';
 import '../../../core/services/capacity_provider.dart';
 import '../../../core/services/auth_provider.dart';
@@ -18,6 +20,7 @@ import '../../../shared/widgets/interactions.dart';
 import '../../../shared/widgets/trade_pill_dropdown.dart';
 import '../../../shared/widgets/app_states.dart';
 import 'capacity_detail_screen.dart';
+import '../../company/screens/company_detail_screen.dart';
 import '../../../core/services/analytics_service.dart';
 import '../widgets/interest_modal.dart';
 
@@ -190,6 +193,12 @@ class _LiveCapacityFeedScreenState
 
     return Column(
       children: [
+        // First-time explainer for the anonymization mechanic — persona 1/5
+        // findings from the pre-launch audit: the only in-context cue for why
+        // a company name is hidden was a small lock icon, with no first-view
+        // explanation anywhere in the logged-in app (the detail dialog's own
+        // trustIdentityHiddenNote only appears once a card is already open).
+        const _AnonymizationExplainerBanner(),
         // ── TYPE TABS ──────────────────────────────────
         Container(
           color: c.surface,
@@ -442,6 +451,62 @@ class _LiveCapacityFeedScreenState
   }
 }
 
+
+// ─── ANONYMIZATION EXPLAINER (first-time only) ──────
+
+const _anonExplainerSeenKey = 'anon_explainer_seen';
+
+class _AnonymizationExplainerBanner extends StatefulWidget {
+  const _AnonymizationExplainerBanner();
+  @override
+  State<_AnonymizationExplainerBanner> createState() => _AnonymizationExplainerBannerState();
+}
+
+class _AnonymizationExplainerBannerState extends State<_AnonymizationExplainerBanner> {
+  bool _dismissed = false;
+
+  bool get _alreadySeen {
+    try {
+      return web.window.localStorage.getItem(_anonExplainerSeenKey) == '1';
+    } catch (_) {
+      return true; // fail closed on the side of not nagging
+    }
+  }
+
+  void _dismiss() {
+    try {
+      web.window.localStorage.setItem(_anonExplainerSeenKey, '1');
+    } catch (_) {}
+    setState(() => _dismissed = true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_dismissed || _alreadySeen) return const SizedBox.shrink();
+    final c = AppColors.of(context);
+    final l = AppLocalizations.of(context);
+    return Container(
+      width: double.infinity,
+      color: AppColors.primary.withOpacity(0.07),
+      padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
+      child: Row(children: [
+        const Icon(Icons.lock_outline, size: 16, color: AppColors.primary),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(l.anonExplainerBannerBody,
+              style: TextStyle(fontSize: 12.5, color: c.textSecondary, height: 1.35)),
+        ),
+        IconButton(
+          onPressed: _dismiss,
+          icon: Icon(Icons.close_rounded, size: 18, color: c.textTertiary),
+          splashRadius: 16,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+        ),
+      ]),
+    );
+  }
+}
 
 // ─── TYPE TAB ───────────────────────────────────────
 
@@ -821,22 +886,6 @@ class _LiveCapacityCard extends ConsumerWidget {
     // founder simply ignores it).
     const isOwner = false;
 
-    // Availability colour coding: green = sofort, yellow = ab Datum
-    // (this/next week), blue = nach Projektende (custom start).
-    Color availabilityColor;
-    switch (capacity.availabilityType) {
-      case AvailabilityType.now:
-        availabilityColor = AppColors.live;
-        break;
-      case AvailabilityType.thisWeek:
-      case AvailabilityType.nextWeek:
-        availabilityColor = AppColors.accent;
-        break;
-      case AvailabilityType.custom:
-        availabilityColor = AppColors.distance;
-        break;
-    }
-
     return HoverLift(
       onTap: () {
         _viewedPosts.add(capacity.id);
@@ -928,31 +977,55 @@ class _LiveCapacityCard extends ConsumerWidget {
                                     color: AppColors.urgent,
                                     filled: capacity.daysLeft! <= 2,
                                   ),
+                                // Freshness — the poster actively vouching the
+                                // crew is free today. Grouped with the other
+                                // status chips (not a bright green line under the
+                                // title, where it competed with the headline). A
+                                // single green dot carries the "real-time" signal;
+                                // the text itself stays neutral.
+                                if (capacity.confirmedToday)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4.5),
+                                    decoration: BoxDecoration(
+                                      color: c.surfaceVariant,
+                                      borderRadius: BorderRadius.circular(5),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Container(
+                                          width: 6,
+                                          height: 6,
+                                          decoration: const BoxDecoration(color: AppColors.live, shape: BoxShape.circle),
+                                        ),
+                                        const SizedBox(width: 5),
+                                        Text(
+                                          l.confirmedTodayLabel,
+                                          style: TextStyle(color: c.textSecondary, fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 0.3),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
                               ],
                             ),
                             const SizedBox(height: 6),
-                            // Meta line: distance / freshness / seen.
+                            // Meta line: distance · time posted · seen — all
+                            // neutral. Distance dropped its blue (a colour that
+                            // signalled nothing); freshness moved up into the
+                            // badge row above.
                             Row(
                               children: [
                                 if (distance != null) ...[
                                   Text(
                                     '${distance.round()} km',
-                                    style: const TextStyle(color: AppColors.distance, fontSize: 13, fontWeight: FontWeight.w800),
+                                    style: TextStyle(color: c.textSecondary, fontSize: 13, fontWeight: FontWeight.w800),
                                   ),
                                   const SizedBox(width: 10),
                                 ],
-                                // "Heute bestätigt" beats "aktualisiert" — it's
-                                // the poster actively vouching the crew is free.
-                                if (capacity.confirmedToday) ...[
-                                  const Icon(Icons.verified_outlined, size: 13, color: AppColors.live),
-                                  const SizedBox(width: 3),
-                                  Text(l.confirmedTodayLabel,
-                                      style: const TextStyle(color: AppColors.live, fontSize: 11.5, fontWeight: FontWeight.w800)),
-                                ] else
-                                  Text(
-                                    capacity.timePostedLabel(l),
-                                    style: TextStyle(color: c.textTertiary, fontSize: 12.5),
-                                  ),
+                                Text(
+                                  capacity.timePostedLabel(l),
+                                  style: TextStyle(color: c.textTertiary, fontSize: 12.5),
+                                ),
                                 if (isViewed) ...[
                                   const SizedBox(width: 6),
                                   Text(l.seenLabel, style: TextStyle(color: c.textTertiary, fontSize: 10)),
@@ -962,9 +1035,12 @@ class _LiveCapacityCard extends ConsumerWidget {
 
                             const SizedBox(height: 8),
 
-                            // No company name, rating, or verified badge — the
-                            // post is anonymous. Identity is only revealed
-                            // through a granted contact request.
+                            // Anonymous-mode posts show no company name,
+                            // rating, or verified badge here — identity is
+                            // only revealed through a granted contact
+                            // request. Visible/discreet posts show identity
+                            // right below the title instead (see the block
+                            // right after).
 
                             // Title — trade-led, biggest and boldest
                             Text(
@@ -979,14 +1055,73 @@ class _LiveCapacityCard extends ConsumerWidget {
                               overflow: TextOverflow.ellipsis,
                             ),
 
+                            // Poster identity — visible/discreet only. Tapping
+                            // opens the real profile via a lightweight shell
+                            // built from this post's own snapshotted fields
+                            // (see CompanyModel.shellFor), self-correcting
+                            // once the live company doc streams in.
+                            if (capacity.visibilityMode != CapacityVisibilityMode.anonymous &&
+                                capacity.posterCompanyId != null) ...[
+                              const SizedBox(height: 6),
+                              InkWell(
+                                borderRadius: BorderRadius.circular(6),
+                                onTap: () => showCompanyDetailDialog(
+                                  context,
+                                  CompanyModel.shellFor(
+                                    id: capacity.posterCompanyId!,
+                                    name: capacity.posterCompanyName ?? '',
+                                    logoUrl: capacity.posterLogoUrl ?? '',
+                                  ),
+                                ),
+                                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                  CircleAvatar(
+                                    radius: 10,
+                                    backgroundColor: AppColors.primary.withOpacity(0.15),
+                                    backgroundImage: (capacity.posterLogoUrl ?? '').isEmpty
+                                        ? null
+                                        : NetworkImage(capacity.posterLogoUrl!),
+                                    child: (capacity.posterLogoUrl ?? '').isEmpty
+                                        ? Text(
+                                            (capacity.posterCompanyName ?? '').isNotEmpty
+                                                ? capacity.posterCompanyName![0].toUpperCase()
+                                                : '?',
+                                            style: const TextStyle(color: AppColors.primary, fontSize: 9, fontWeight: FontWeight.w900),
+                                          )
+                                        : null,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Flexible(
+                                    child: Text(
+                                      capacity.posterCompanyName ?? '',
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: c.textSecondary),
+                                    ),
+                                  ),
+                                  if (capacity.posterVerified) ...[
+                                    const SizedBox(width: 4),
+                                    const Icon(Icons.verified, size: 13, color: AppColors.live),
+                                  ],
+                                ]),
+                              ),
+                            ],
+
                             // Trust line — aggregate, non-identifying (no name):
-                            // ✓ Verifiziert · ⭐ rating. The at-a-glance trust
-                            // signal, shown only when the poster actually has it.
+                            // ✓ Verifiziert · ⭐ rating · ⚡ response time. The
+                            // at-a-glance trust signal, shown only when the
+                            // poster actually has each one. Response time is
+                            // the one signal that answers "will I hear back
+                            // in ten minutes or ten days" — the exact decision
+                            // point for choosing which anonymous post to
+                            // contact, before their profile is even visible.
                             // (Subtitle removed — crew·district is already in the
-                            // spec chips below; no duplication.)
-                            if (capacity.posterVerified || capacity.posterRatingCount > 0) ...[
+                            // spec chips below; no duplication.) Wrap (not Row)
+                            // so a narrow card degrades to a second line
+                            // instead of overflowing once three badges fit.
+                            if (capacity.posterVerified || capacity.posterRatingCount > 0 || capacity.posterAvgResponseHours != null) ...[
                               const SizedBox(height: 7),
-                              Row(
+                              Wrap(
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                runSpacing: 4,
                                 children: [
                                   if (capacity.posterVerified) ...[
                                     const Icon(Icons.verified, size: 14, color: AppColors.live),
@@ -1008,6 +1143,17 @@ class _LiveCapacityCard extends ConsumerWidget {
                                     Text('(${capacity.posterRatingCount})',
                                         style: TextStyle(fontSize: 12, color: c.textTertiary)),
                                   ],
+                                  if ((capacity.posterVerified || capacity.posterRatingCount > 0) && capacity.posterAvgResponseHours != null) ...[
+                                    const SizedBox(width: 8),
+                                    Container(width: 3, height: 3, decoration: BoxDecoration(color: c.textTertiary, shape: BoxShape.circle)),
+                                    const SizedBox(width: 8),
+                                  ],
+                                  if (capacity.posterAvgResponseHours != null) ...[
+                                    Icon(Icons.bolt_outlined, size: 14, color: c.textTertiary),
+                                    const SizedBox(width: 3),
+                                    Text(l.responseTimeLabel(capacity.posterAvgResponseHours!),
+                                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: c.textSecondary)),
+                                  ],
                                 ],
                               ),
                             ],
@@ -1026,15 +1172,23 @@ class _LiveCapacityCard extends ConsumerWidget {
 
                             const SizedBox(height: 12),
 
-                            // Info chips
+                            // Spec chips — trade leads (anchor), location + team
+                            // stay neutral, availability turns green only when
+                            // it's immediate. See _InfoChip / _ChipStyle below.
                             Wrap(
                               spacing: 6,
                               runSpacing: 6,
                               children: [
-                                _InfoChip(icon: Icons.build_outlined, label: l.tradeName(capacity.trade), color: accentColor),
-                                _InfoChip(icon: Icons.location_on_outlined, label: capacity.location, color: AppColors.distance),
-                                _InfoChip(icon: Icons.people_outline, label: '${capacity.workerCount} ${l.persPeriod}', color: c.textSecondary),
-                                _InfoChip(icon: Icons.schedule_outlined, label: capacity.availabilityLabel(l), color: availabilityColor),
+                                _InfoChip(icon: Icons.build_outlined, label: l.tradeName(capacity.trade), style: _ChipStyle.anchor),
+                                _InfoChip(icon: Icons.location_on_outlined, label: capacity.location),
+                                _InfoChip(icon: Icons.people_outline, label: '${capacity.workerCount} ${l.persPeriod}'),
+                                _InfoChip(
+                                  icon: Icons.schedule_outlined,
+                                  label: capacity.availabilityLabel(l),
+                                  style: capacity.availabilityType == AvailabilityType.now
+                                      ? _ChipStyle.live
+                                      : _ChipStyle.neutral,
+                                ),
                               ],
                             ),
 
@@ -1152,7 +1306,7 @@ class _LiveCapacityCard extends ConsumerWidget {
                                 _viewedPosts.add(capacity.id);
                                 _openDetail(context);
                               },
-                              icon: Icon(Icons.arrow_forward_ios_rounded, size: 15, color: accentColor),
+                              icon: Icon(Icons.arrow_forward_ios_rounded, size: 15, color: c.textSecondary),
                               tooltip: l.detailsTooltip,
                             ),
                           ],
@@ -1220,30 +1374,68 @@ class _FeedBadge extends StatelessWidget {
   }
 }
 
+// The 4 spec chips (Trade · Location · Team · Availability) are the card's
+// primary scan row. They used to each carry their OWN colour (trade=accent,
+// location=blue, team=grey, availability=green/amber/blue) — four hues fighting
+// at equal weight, which also diluted the accent colour's one real job
+// (offer-vs-need). The card now spends colour deliberately instead:
+//   • anchor  → the trade, the single most important fact. Leads the row by
+//               TYPE weight (bold primary text), not by colour.
+//   • neutral → location + team: quiet, factual, greyscale.
+//   • live    → availability, but only when it's genuinely immediate ("sofort").
+//               A restrained green — the same green used for LIVE / "bestätigt"
+//               and nowhere else, so green always reads as "available right now".
+enum _ChipStyle { anchor, neutral, live }
+
 class _InfoChip extends StatelessWidget {
   final IconData icon;
   final String label;
-  final Color color;
+  final _ChipStyle style;
 
-  const _InfoChip({required this.icon, required this.label, required this.color});
+  const _InfoChip({required this.icon, required this.label, this.style = _ChipStyle.neutral});
 
   @override
   Widget build(BuildContext context) {
-    // The 4 spec chips (Trade · Team · Location · Availability) are the card's
-    // primary scan row — sized a touch larger/stronger than metadata.
+    final c = AppColors.of(context);
+    final Color bg, iconColor, textColor;
+    Color? borderColor;
+    final FontWeight weight;
+    switch (style) {
+      case _ChipStyle.anchor:
+        bg = c.surfaceVariant;
+        iconColor = c.textSecondary;
+        textColor = c.textPrimary;
+        borderColor = null;
+        weight = FontWeight.w800;
+        break;
+      case _ChipStyle.neutral:
+        bg = c.surfaceVariant.withOpacity(0.55);
+        iconColor = c.textTertiary;
+        textColor = c.textSecondary;
+        borderColor = c.border;
+        weight = FontWeight.w700;
+        break;
+      case _ChipStyle.live:
+        bg = AppColors.live.withOpacity(0.12);
+        iconColor = AppColors.live;
+        textColor = AppColors.live;
+        borderColor = AppColors.live.withOpacity(0.32);
+        weight = FontWeight.w800;
+        break;
+    }
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6.5),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.10),
+        color: bg,
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: color.withOpacity(0.28)),
+        border: borderColor != null ? Border.all(color: borderColor) : null,
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: color),
+          Icon(icon, size: 14, color: iconColor),
           const SizedBox(width: 6),
-          Text(label, style: TextStyle(fontSize: 13.5, color: color, fontWeight: FontWeight.w800)),
+          Text(label, style: TextStyle(fontSize: 13.5, color: textColor, fontWeight: weight)),
         ],
       ),
     );

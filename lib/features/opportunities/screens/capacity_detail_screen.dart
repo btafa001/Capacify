@@ -15,6 +15,7 @@ import '../../../core/services/contact_request_provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/services/analytics_service.dart';
 import '../../company/screens/company_profile_screen.dart';
+import '../../company/screens/company_detail_screen.dart';
 import '../widgets/interest_modal.dart';
 
 /// Opens a capacity's details as a compact popup instead of pushing a
@@ -289,6 +290,13 @@ class _CapacityDetailScreenState
         ),
         const SizedBox(height: 10),
         _TrustRow(icon: Icons.star_outline, color: AppColors.accent, label: ratingText),
+        if (capacity.posterAvgResponseHours != null) ...[
+          const SizedBox(height: 10),
+          _TrustRow(
+              icon: Icons.bolt_outlined,
+              color: c.textSecondary,
+              label: l.responseTimeLabel(capacity.posterAvgResponseHours!)),
+        ],
         const SizedBox(height: 10),
         _TrustRow(icon: Icons.location_on_outlined, color: AppColors.distance, label: capacity.location),
         const SizedBox(height: 10),
@@ -296,6 +304,17 @@ class _CapacityDetailScreenState
             icon: Icons.build_outlined,
             color: c.textSecondary,
             label: '${l.tradeName(capacity.trade)} · ${capacity.workerCount} ${l.persons}'),
+        if (capacity.skillDetails.trim().isNotEmpty) ...[
+          const SizedBox(height: 10),
+          _TrustRow(icon: Icons.construction_outlined, color: c.textSecondary, label: capacity.skillDetails),
+        ],
+        if (capacity.dayRateBand.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          _TrustRow(
+              icon: Icons.euro_outlined,
+              color: c.textSecondary,
+              label: l.dayRateBandName(capacity.dayRateBand)),
+        ],
         const SizedBox(height: 12),
         Container(height: 1, color: c.border),
         const SizedBox(height: 12),
@@ -589,8 +608,10 @@ class _CapacityDetailScreenState
 
                   const SizedBox(height: 6),
 
-                  // Anonymous — no company shown. Subtitle is the match
-                  // context (trade · district), never identity.
+                  // Anonymous-mode posts show no identity here — the
+                  // subtitle stays the match context (trade · district)
+                  // only. Visible/discreet posts additionally show the
+                  // poster's identity below (see the block right after).
                   Text(
                     '${l.tradeName(capacity.trade)} · ${capacity.location}',
                     style: TextStyle(
@@ -599,6 +620,58 @@ class _CapacityDetailScreenState
                       fontWeight: FontWeight.w600,
                     ),
                   ),
+
+                  // Poster identity — visible/discreet posts only. Tapping
+                  // opens the real profile; a lightweight shell (built from
+                  // just the fields already snapshotted on this post) opens
+                  // the dialog instantly and self-corrects once the live
+                  // company doc streams in (see CompanyModel.shellFor).
+                  if (capacity.visibilityMode != CapacityVisibilityMode.anonymous &&
+                      capacity.posterCompanyId != null) ...[
+                    const SizedBox(height: 10),
+                    InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () => showCompanyDetailDialog(
+                        context,
+                        CompanyModel.shellFor(
+                          id: capacity.posterCompanyId!,
+                          name: capacity.posterCompanyName ?? '',
+                          logoUrl: capacity.posterLogoUrl ?? '',
+                        ),
+                      ),
+                      child: Row(children: [
+                        CircleAvatar(
+                          radius: 14,
+                          backgroundColor: AppColors.primary.withOpacity(0.15),
+                          backgroundImage: (capacity.posterLogoUrl ?? '').isEmpty
+                              ? null
+                              : NetworkImage(capacity.posterLogoUrl!),
+                          child: (capacity.posterLogoUrl ?? '').isEmpty
+                              ? Text(
+                                  (capacity.posterCompanyName ?? '').isNotEmpty
+                                      ? capacity.posterCompanyName![0].toUpperCase()
+                                      : '?',
+                                  style: const TextStyle(color: AppColors.primary, fontSize: 12, fontWeight: FontWeight.w900),
+                                )
+                              : null,
+                        ),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            capacity.posterCompanyName ?? '',
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.textPrimary),
+                          ),
+                        ),
+                        if (capacity.posterVerified) ...[
+                          const SizedBox(width: 6),
+                          const Icon(Icons.verified, size: 15, color: AppColors.live),
+                        ],
+                        const SizedBox(width: 4),
+                        Icon(Icons.chevron_right, size: 16, color: c.textTertiary),
+                      ]),
+                    ),
+                  ],
 
                   const SizedBox(height: 20),
 

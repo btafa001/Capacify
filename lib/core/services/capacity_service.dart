@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../constants/app_constants.dart';
 import '../models/capacity_model.dart';
@@ -365,6 +366,7 @@ class CapacityService {
 
       return all.where((c) {
         if (c.contentFlagged) return false;
+        if (c.posterSuspended) return false;
         if (c.availableTo.isBefore(startOfToday)) return false;
         final matchesTrade = trade == null ||
             trade.isEmpty ||
@@ -379,29 +381,83 @@ class CapacityService {
   /// My postings — returns ALL statuses for history. The public posts no
   /// longer carry companyId, so ownership is resolved through the locked
   /// capacityOwners sidecar (queryable by the owner via rules), then the
-  /// matching public docs are fetched and shown to the owner.
+  /// matching public docs are watched live and shown to the owner.
+  ///
+  /// This used to do a one-time get() on each capacities/{id} doc instead of
+  /// listening to it — so the outer stream only re-fired when a post was
+  /// created/removed (capacityOwners changing), never when an EXISTING
+  /// post's own status field changed. Result: awarding/negotiating/
+  /// cancelling a post updated Firestore correctly, but My Listings kept
+  /// showing it under its stale old status until something else happened to
+  /// touch capacityOwners. Now each capacities doc is watched live too
+  /// (chunked at Firestore's whereIn limit of 30), so a status change shows
+  /// up immediately.
   Stream<List<CapacityModel>> getMyCapacities(
     String companyId,
   ) {
-    return _firestore
-        .collection('capacityOwners')
-        .where('posterCompanyId', isEqualTo: companyId)
-        .snapshots()
-        .asyncMap((ownerSnap) async {
-      final ids = ownerSnap.docs.map((d) => d.id).toList();
-      if (ids.isEmpty) return <CapacityModel>[];
-      final List<CapacityModel> posts = [];
-      for (final id in ids) {
-        try {
-          final doc =
-              await _firestore.collection('capacities').doc(id).get();
-          if (doc.exists) posts.add(CapacityModel.fromFirestore(doc));
-        } catch (_) {}
+    late final StreamController<List<CapacityModel>> controller;
+    StreamSubscription? ownerSub;
+    List<StreamSubscription> capSubs = [];
+    Map<int, Map<String, CapacityModel>> chunkResults = {};
+
+    void emit() {
+      final merged = <String, CapacityModel>{};
+      for (final chunk in chunkResults.values) {
+        merged.addAll(chunk);
       }
-      posts.sort((a, b) => (b.createdAt ?? DateTime(0))
-          .compareTo(a.createdAt ?? DateTime(0)));
-      return posts;
-    });
+      final posts = merged.values.toList()
+        ..sort((a, b) => (b.createdAt ?? DateTime(0))
+            .compareTo(a.createdAt ?? DateTime(0)));
+      controller.add(posts);
+    }
+
+    void subscribe() {
+      ownerSub = _firestore
+          .collection('capacityOwners')
+          .where('posterCompanyId', isEqualTo: companyId)
+          .snapshots()
+          .listen((ownerSnap) {
+        for (final s in capSubs) {
+          s.cancel();
+        }
+        capSubs = [];
+        chunkResults = {};
+
+        final ids = ownerSnap.docs.map((d) => d.id).toList();
+        if (ids.isEmpty) {
+          controller.add(<CapacityModel>[]);
+          return;
+        }
+
+        const chunkSize = 30; // Firestore's whereIn cap.
+        for (var i = 0; i < ids.length; i += chunkSize) {
+          final chunkIndex = i ~/ chunkSize;
+          final end = (i + chunkSize < ids.length) ? i + chunkSize : ids.length;
+          final chunk = ids.sublist(i, end);
+          capSubs.add(_firestore
+              .collection('capacities')
+              .where(FieldPath.documentId, whereIn: chunk)
+              .snapshots()
+              .listen((capSnap) {
+            chunkResults[chunkIndex] = {
+              for (final d in capSnap.docs) d.id: CapacityModel.fromFirestore(d),
+            };
+            emit();
+          }));
+        }
+      });
+    }
+
+    controller = StreamController<List<CapacityModel>>.broadcast(
+      onListen: subscribe,
+      onCancel: () {
+        ownerSub?.cancel();
+        for (final s in capSubs) {
+          s.cancel();
+        }
+      },
+    );
+    return controller.stream;
   }
 
   // ─── FAVORITES FEED ───

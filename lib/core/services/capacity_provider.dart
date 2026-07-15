@@ -42,6 +42,14 @@ final myCapacitiesProvider =
   return service.getMyCapacities(companyId);
 });
 
+// One-time lookup by id — used by chat_screen.dart to decide whether the
+// underlying post is closed/cancelled yet (only then can its chat be deleted).
+final capacityByIdProvider =
+    FutureProvider.family<CapacityModel?, String>((ref, id) {
+  final service = ref.watch(capacityServiceProvider);
+  return service.getCapacityById(id);
+});
+
 // Stream of capacity IDs this user has favorited
 final userFavoriteIdsProvider =
     StreamProvider<Set<String>>((ref) {

@@ -177,13 +177,16 @@ class _MyCapacitiesScreenState
     final postsAsync =
         ref.watch(myCapacitiesProvider(widget.company.id));
 
-    // Per-post count of pending (not-yet-answered) contact requests — the
-    // poster pull-back signal ("3 neue Anfragen") that brings owners back daily.
+    // Per-post count of not-yet-acted-on contact requests — the poster
+    // pull-back signal ("3 neue Anfragen") that brings owners back daily.
+    // Visible/discreet posts are auto-granted and never `pending` (see
+    // CapacityModel.visibilityMode), so a granted-but-unseen request counts
+    // too — otherwise this badge would permanently read 0 for those posts.
     final received =
         ref.watch(receivedRequestsProvider(widget.company.id)).valueOrNull ?? [];
     final Map<String, int> pendingByPost = {};
     for (final r in received) {
-      if (r.status == 'pending') {
+      if (r.status == 'pending' || (r.status == 'granted' && !r.seenByPoster)) {
         pendingByPost[r.postId] = (pendingByPost[r.postId] ?? 0) + 1;
       }
     }

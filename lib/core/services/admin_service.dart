@@ -71,6 +71,49 @@ class AdminService {
     }
   }
 
+  // ─── SUSPENSION (moderation consequence) ───
+  //
+  // Distinct from contentFlagged (auto-detected bad text): this is a
+  // deliberate admin action for behavioral violations. While suspended a
+  // company can't publish new posts (enforced in firestore.rules' capacities
+  // create rule) and its EXISTING posts disappear from the public feed —
+  // via the posterSuspended snapshot on each post, since anonymous-mode
+  // posts carry no companyId to filter by directly (see capacityOwners,
+  // the only place poster identity lives). Looked up through that sidecar
+  // rather than the legacy `companyId` field on capacities, which predates
+  // the anonymization split and is empty on every current post.
+  Future<void> _setPostsSuspended(String companyId, bool suspended) async {
+    final owners = await _db
+        .collection('capacityOwners')
+        .where('posterCompanyId', isEqualTo: companyId)
+        .get();
+    if (owners.docs.isEmpty) return;
+    final batch = _db.batch();
+    for (final owner in owners.docs) {
+      batch.update(
+        _db.collection('capacities').doc(owner.id),
+        {'posterSuspended': suspended},
+      );
+    }
+    await batch.commit();
+  }
+
+  Future<void> suspendCompany(String companyId, String reason) async {
+    await _db.collection('companies').doc(companyId).update({
+      'suspended': true,
+      'suspensionReason': reason,
+    });
+    await _setPostsSuspended(companyId, true);
+  }
+
+  Future<void> unsuspendCompany(String companyId) async {
+    await _db.collection('companies').doc(companyId).update({
+      'suspended': false,
+      'suspensionReason': '',
+    });
+    await _setPostsSuspended(companyId, false);
+  }
+
   // ─── RATING MODERATION ───
 
   Stream<List<CompanyRatingModel>> getPendingRatings() {

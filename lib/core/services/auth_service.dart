@@ -1,5 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -35,6 +36,14 @@ class AuthService {
         email: email,
         password: password,
       );
+
+      // Best-effort — a verification-email hiccup shouldn't block the account
+      // being created. Posting/contacting stay gated on emailVerified either
+      // way (firestore.rules), so there's always a way to retry via the
+      // banner's resend button.
+      try {
+        await _sendVerificationEmail();
+      } catch (_) {}
 
       // Create user document
       await _firestore
@@ -74,10 +83,18 @@ class AuthService {
           'services': [],
           'logoUrl': '',
           'vatNumber': vatNumber,
-          'verificationStatus': vatNumber.isNotEmpty ? 'pending' : 'none',
+          // Always 'none' at creation — 'pending' is reachable only via the
+          // verifyMyCompany Cloud Function after a real VIES check (see
+          // firestore.rules, which now rejects any other value here). This
+          // param isn't wired into the registration UI today (vatNumber is
+          // always '' from that call site), but the create rule would reject
+          // the whole signup if a future UI change ever passed one through
+          // with the old vatNumber.isNotEmpty-derived value.
+          'verificationStatus': 'none',
           'ratingSum': 0,
           'ratingCount': 0,
           'contentFlagged': false,
+          'referredBy': _referrerFromUrl(excludeUid: credential.user!.uid),
           'createdAt': FieldValue.serverTimestamp(),
         });
       }
@@ -85,6 +102,21 @@ class AuthService {
       return credential;
     } on FirebaseAuthException catch (e) {
       throw _handleAuthException(e);
+    }
+  }
+
+  /// Reads ?ref={companyId} off the current page URL — the invite link's
+  /// referral attribution (see invite_dialog.dart, which builds that link).
+  /// Excludes self-referral (shouldn't be reachable normally, since the
+  /// referrer's id was minted before this new account existed, but cheap to
+  /// guard directly). Best-effort: any malformed/missing param → ''.
+  String _referrerFromUrl({required String excludeUid}) {
+    try {
+      final ref = Uri.base.queryParameters['ref'];
+      if (ref == null || ref.isEmpty || ref == excludeUid) return '';
+      return ref;
+    } catch (_) {
+      return '';
     }
   }
 
@@ -231,10 +263,21 @@ class AuthService {
   /// instead of leaving them on Firebase's bare confirmation page. The email's
   /// subject/body/sender and its deliverability (spam) are configured in the
   /// Firebase Console (Auth → Templates), NOT here.
+  ///
+  /// [suppressUserNotFound]: when true, a 'user-not-found' failure resolves
+  /// silently instead of throwing — for the PUBLIC "forgot password" screen
+  /// only. Showing a different outcome for "no account" vs. "email sent" is
+  /// exactly what lets that screen be used to enumerate registered addresses
+  /// (see the pre-launch audit's black-hat pass); no email goes out to a
+  /// nonexistent address either way, so the UI should look identical too.
+  /// Left false (the default) for the admin-invite call sites, where
+  /// 'user-not-found' actually means something went wrong worth surfacing —
+  /// those accounts should already exist by the time this is called.
   Future<void> sendPasswordResetEmail(
     String email, {
     String? languageCode,
     String? continueUrl,
+    bool suppressUserNotFound = false,
   }) async {
     try {
       if (languageCode != null) {
@@ -247,6 +290,7 @@ class AuthService {
             : ActionCodeSettings(url: continueUrl, handleCodeInApp: false),
       );
     } on FirebaseAuthException catch (e) {
+      if (suppressUserNotFound && e.code == 'user-not-found') return;
       throw _handleAuthException(e);
     }
   }
@@ -267,6 +311,50 @@ class AuthService {
     } on FirebaseAuthException catch (e) {
       throw _handleAuthException(e);
     }
+  }
+
+  /// Sends the "verify your email" message via our own branded Cloud Function
+  /// (sendVerificationEmail in functions/index.js) — same real Firebase Auth
+  /// verification link, but our own template/sender instead of the default
+  /// Console-templated email, for both appearance and deliverability. Falls
+  /// back to Firebase's own sendEmailVerification() if the function call
+  /// fails for any reason (SMTP not configured, function unreachable, a
+  /// stale deploy) so a user is never left without any verification email at
+  /// all. The fallback's own errors still propagate normally.
+  Future<void> _sendVerificationEmail() async {
+    try {
+      await FirebaseFunctions.instanceFor(region: 'europe-west3')
+          .httpsCallable('sendVerificationEmail')
+          .call();
+    } catch (_) {
+      final user = _auth.currentUser;
+      if (user == null) return;
+      try {
+        await user.sendEmailVerification();
+      } on FirebaseAuthException catch (e) {
+        throw _handleAuthException(e);
+      }
+    }
+  }
+
+  /// Re-sends the verification email to the signed-in user — the resend
+  /// button on the email-verification banner (see dashboard_screen.dart).
+  Future<void> resendVerificationEmail() async {
+    if (_auth.currentUser == null) return;
+    await _sendVerificationEmail();
+  }
+
+  /// Refreshes the cached Auth user (and its ID token) from the server —
+  /// needed because `currentUser.emailVerified` reflects whatever was true
+  /// when the token was last issued, not the live state. Called by the
+  /// verification banner's "I've verified" button after the user clicks the
+  /// link in another tab and comes back.
+  Future<bool> reloadAndCheckEmailVerified() async {
+    final user = _auth.currentUser;
+    if (user == null) return false;
+    await user.reload();
+    await _auth.currentUser?.getIdToken(true);
+    return _auth.currentUser?.emailVerified ?? false;
   }
 
   Future<void> signOut() async {

@@ -16,6 +16,7 @@ import '../../../core/services/analytics_service.dart';
 import '../../../core/services/consent_provider.dart';
 import '../../../core/services/company_provider.dart';
 import '../../../core/services/privacy_service.dart';
+import '../../../shared/widgets/invite_dialog.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -170,6 +171,8 @@ class _SettingsScreenState
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
     final isMobile = MediaQuery.of(context).size.width < 768;
+    final uid = ref.read(authServiceProvider).currentUser?.uid;
+    final referralCount = uid == null ? 0 : ref.watch(referralCountProvider(uid)).valueOrNull ?? 0;
     return Scaffold(
       backgroundColor: c.background,
       appBar: AppBar(
@@ -248,6 +251,22 @@ class _SettingsScreenState
                         title: l.changePasswordTitle,
                         subtitle: l.setNewPasswordSubtitle,
                         onTap: _showChangePasswordDialog,
+                      ),
+                      _Divider(),
+                      // Referral attribution (see AuthService._referrerFromUrl,
+                      // CompanyModel.referredBy) — recognition for bringing
+                      // companies in, not a credit/quota bonus: during Early
+                      // Access every company already has an effectively
+                      // unlimited monthly quota, so crediting more of the
+                      // same wouldn't actually motivate anything. Revisit once
+                      // real pricing exists and a bonus would mean something.
+                      _LinkTile(
+                        icon: Icons.person_add_alt_1_outlined,
+                        title: l.referralsTitle,
+                        subtitle: referralCount > 0
+                            ? l.referralsCountSubtitle(referralCount)
+                            : l.referralsNoneYetSubtitle,
+                        onTap: () => showInviteDialog(context, companyId: uid),
                       ),
                       _Divider(),
                       // Pricing entry intentionally hidden for the free-contact

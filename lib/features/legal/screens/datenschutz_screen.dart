@@ -239,6 +239,7 @@ class _DPlaceholder extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           Container(
+            width: double.infinity,
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: c.surface,
@@ -356,6 +357,7 @@ class _DSection extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Container(
+            width: double.infinity,
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: c.surface,

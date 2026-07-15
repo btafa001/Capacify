@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/models/company_model.dart';
 import '../../../core/models/company_rating_model.dart';
@@ -1220,65 +1219,7 @@ class _RatingsTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final pendingAsync = ref.watch(pendingRatingsProvider);
-
-    return Column(
-      children: [
-        const Padding(
-          padding: EdgeInsets.fromLTRB(24, 16, 24, 0),
-          child: Align(alignment: Alignment.centerRight, child: _RecomputeRatingsButton()),
-        ),
-        Expanded(child: _RatingsList(pendingAsync: pendingAsync)),
-      ],
-    );
-  }
-}
-
-/// One-time backfill trigger (#10): recomputes every company's ratingSum/
-/// ratingCount from approved reviews, fixing any aggregate already inflated by
-/// a deletion that predates the auto-recompute Cloud Function trigger.
-class _RecomputeRatingsButton extends StatefulWidget {
-  const _RecomputeRatingsButton();
-  @override
-  State<_RecomputeRatingsButton> createState() => _RecomputeRatingsButtonState();
-}
-
-class _RecomputeRatingsButtonState extends State<_RecomputeRatingsButton> {
-  bool _running = false;
-
-  Future<void> _run() async {
-    final l = AppLocalizations.of(context);
-    setState(() => _running = true);
-    try {
-      final result = await FirebaseFunctions.instanceFor(region: 'europe-west3')
-          .httpsCallable('recomputeAllRatingAggregates')
-          .call();
-      final updated = (result.data as Map)['updated'] as int? ?? 0;
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l.recomputeRatingsSuccess(updated)), backgroundColor: AppColors.live),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l.errorWithMessage(e)), backgroundColor: AppColors.error),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _running = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
-    return TextButton.icon(
-      onPressed: _running ? null : _run,
-      icon: _running
-          ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
-          : const Icon(Icons.refresh_rounded, size: 16),
-      label: Text(l.recomputeRatingsButton, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700)),
-    );
+    return _RatingsList(pendingAsync: pendingAsync);
   }
 }
 
@@ -1934,10 +1875,23 @@ class _FlaggedCompanyCard extends ConsumerWidget {
     final dateStr =
         date != null ? '${date.day}.${date.month}.${date.year}' : '—';
 
+    // enforceCompanyIntegrity (functions/index.js) tags WHY this got flagged —
+    // surface the impersonation/duplicate-VAT cases specifically since "this
+    // might not be who they say they are" needs a different admin judgment
+    // call than a moderation hit on the description text.
+    final String subtitle;
+    if (company.flagReason == 'impersonation') {
+      subtitle = l.impersonationFlagNotice(company.flagDetail);
+    } else if (company.flagReason == 'duplicate_vat') {
+      subtitle = l.duplicateVatFlagNotice(company.flagDetail);
+    } else {
+      subtitle = company.trades.map((t) => l.tradeName(t)).join(', ');
+    }
+
     return _ModerationCardShell(
       typeLabel: l.flaggedCompanyTypeLabel,
       title: company.name,
-      subtitle: company.trades.map((t) => l.tradeName(t)).join(', '),
+      subtitle: subtitle,
       body: company.description,
       dateStr: dateStr,
       l: l,
@@ -2353,6 +2307,110 @@ class _CompanyAdminRow extends ConsumerWidget {
     }
   }
 
+  Future<void> _suspend(BuildContext context, WidgetRef ref) async {
+    final c = AppColors.of(context);
+    final l = AppLocalizations.of(context);
+    final reasonController = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: c.surface,
+        title: Text(
+          l.suspendCompanyTitle,
+          style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.w900, fontSize: 17),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              l.suspendCompanyBody(company.name),
+              style: TextStyle(color: c.textSecondary, fontSize: 14, height: 1.5),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: reasonController,
+              maxLines: 2,
+              style: TextStyle(color: c.textPrimary, fontSize: 14),
+              decoration: InputDecoration(
+                hintText: l.suspendReasonHint,
+                hintStyle: TextStyle(color: c.textTertiary, fontSize: 13),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(l.cancel)),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l.suspendButton, style: const TextStyle(color: AppColors.error, fontWeight: FontWeight.w900)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await ref.read(adminServiceProvider).suspendCompany(company.id, reasonController.text.trim());
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(l.companySuspendedSnackbar(company.name)),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(l.errorWithMessage(e)),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    }
+  }
+
+  Future<void> _unsuspend(BuildContext context, WidgetRef ref) async {
+    final c = AppColors.of(context);
+    final l = AppLocalizations.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: c.surface,
+        title: Text(
+          l.unsuspendCompanyTitle,
+          style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.w900, fontSize: 17),
+        ),
+        content: Text(
+          l.unsuspendCompanyBody(company.name),
+          style: TextStyle(color: c.textSecondary, fontSize: 14, height: 1.5),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(l.cancel)),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l.unsuspendButton, style: const TextStyle(color: AppColors.live, fontWeight: FontWeight.w900)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await ref.read(adminServiceProvider).unsuspendCompany(company.id);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(l.companyUnsuspendedSnackbar(company.name)),
+          backgroundColor: AppColors.live,
+        ));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(l.errorWithMessage(e)),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final c = AppColors.of(context);
@@ -2468,6 +2526,35 @@ class _CompanyAdminRow extends ConsumerWidget {
             ),
           ),
 
+          // Suspended badge
+          if (company.suspended) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+              decoration: BoxDecoration(
+                color: AppColors.error.withOpacity(0.10),
+                borderRadius: BorderRadius.circular(5),
+                border: Border.all(color: AppColors.error.withOpacity(0.35)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.block, size: 11, color: AppColors.error),
+                  const SizedBox(width: 3),
+                  Text(
+                    l.suspendedBadge,
+                    style: const TextStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w900,
+                      color: AppColors.error,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
           // Revoke button (only for verified)
           if (status == 'verified') ...[
             const SizedBox(width: 8),
@@ -2481,6 +2568,20 @@ class _CompanyAdminRow extends ConsumerWidget {
               padding: EdgeInsets.zero,
             ),
           ],
+
+          // Suspend / unsuspend toggle
+          const SizedBox(width: 8),
+          IconButton(
+            icon: Icon(
+              company.suspended ? Icons.play_circle_outline : Icons.block,
+              size: 18,
+              color: company.suspended ? AppColors.live : c.textTertiary,
+            ),
+            tooltip: company.suspended ? l.unsuspendCompanyTooltip : l.suspendCompanyTooltip,
+            onPressed: () => company.suspended ? _unsuspend(context, ref) : _suspend(context, ref),
+            constraints: const BoxConstraints(),
+            padding: EdgeInsets.zero,
+          ),
         ],
       ),
       ),

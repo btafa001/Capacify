@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
@@ -5,6 +6,7 @@ import '../../../core/models/capacity_model.dart';
 import '../../../core/models/capacity_owner_model.dart';
 import '../../../core/models/company_model.dart';
 import '../../../core/services/capacity_provider.dart';
+import '../../../core/services/form_draft_service.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/utils/content_moderation.dart';
@@ -46,17 +48,27 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
 
   final TextEditingController _workerCountController = TextEditingController();
   final TextEditingController _descriptionController = TextEditingController();
+  final TextEditingController _skillDetailsController = TextEditingController();
 
   CapacityType _type = CapacityType.offer;
+  CapacityVisibilityMode _visibilityMode = CapacityVisibilityMode.visible;
   String _selectedTrade = '';
   AvailabilityType _availabilityType = AvailabilityType.thisWeek;
   String _selectedDistrict = '';
   int _workerCount = 1;
+  String _dayRateBand = '';
   bool _isPosting = false;
 
   // Description is optional — trade + district are the only required fields.
   bool get _isValid =>
       _selectedTrade.isNotEmpty && _selectedDistrict.isNotEmpty;
+
+  // Draft-save — same rationale/pattern as register_screen.dart. Never
+  // restored over an explicit repost prefill (that's already an intentional,
+  // different kind of pre-fill).
+  static const _draftKey = 'draft_create_capacity';
+  Timer? _draftTimer;
+  bool _posted = false;
 
   @override
   void initState() {
@@ -66,30 +78,96 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
     if (p != null) {
       // Repost: reopen a previous post pre-filled (change one field → publish).
       _type = p.type;
+      _visibilityMode = p.visibilityMode;
       _selectedTrade = p.trade;
       _availabilityType = p.availabilityType;
       _selectedDistrict = p.location;
       _workerCount = p.workerCount;
       _descriptionController.text = p.description;
+      _dayRateBand = p.dayRateBand;
+      _skillDetailsController.text = p.skillDetails;
     } else {
       // Smart defaults: pre-select the company's primary trade so a first-time
       // poster starts one step ahead.
       if (widget.company.trades.isNotEmpty) {
         _selectedTrade = widget.company.trades.first;
       }
+      _restoreDraft();
     }
     _workerCountController.text = '$_workerCount';
+    _draftTimer = Timer.periodic(const Duration(seconds: 5), (_) => _saveDraft());
+  }
+
+  void _restoreDraft() {
+    final draft = FormDraftService.load(_draftKey);
+    if (draft == null) return;
+    final trade = draft['selectedTrade'] as String?;
+    if (trade != null && kTrades.contains(trade)) _selectedTrade = trade;
+    final district = draft['selectedDistrict'] as String?;
+    if (district != null && kHamburgDistricts.contains(district)) _selectedDistrict = district;
+    _type = (draft['type'] as String?) == 'need' ? CapacityType.need : CapacityType.offer;
+    _visibilityMode = CapacityVisibilityMode.values.firstWhere(
+      (m) => m.name == draft['visibilityMode'],
+      orElse: () => _visibilityMode,
+    );
+    _availabilityType = AvailabilityType.values.firstWhere(
+      (t) => t.name == draft['availabilityType'],
+      orElse: () => _availabilityType,
+    );
+    _workerCount = draft['workerCount'] as int? ?? _workerCount;
+    _descriptionController.text = draft['description'] as String? ?? '';
+    _skillDetailsController.text = draft['skillDetails'] as String? ?? '';
+    _dayRateBand = draft['dayRateBand'] as String? ?? '';
+    final from = draft['availableFrom'] as String?;
+    final to = draft['availableTo'] as String?;
+    if (from != null) _availableFrom = DateTime.tryParse(from);
+    if (to != null) _availableTo = DateTime.tryParse(to);
+  }
+
+  void _saveDraft() {
+    if (_selectedTrade.isEmpty &&
+        _selectedDistrict.isEmpty &&
+        _descriptionController.text.trim().isEmpty &&
+        _skillDetailsController.text.trim().isEmpty) {
+      return;
+    }
+    FormDraftService.save(_draftKey, {
+      'selectedTrade': _selectedTrade,
+      'selectedDistrict': _selectedDistrict,
+      'type': _type == CapacityType.need ? 'need' : 'offer',
+      'visibilityMode': _visibilityMode.name,
+      'availabilityType': _availabilityType.name,
+      'workerCount': _workerCount,
+      'description': _descriptionController.text,
+      'skillDetails': _skillDetailsController.text,
+      'dayRateBand': _dayRateBand,
+      if (_availableFrom != null) 'availableFrom': _availableFrom!.toIso8601String(),
+      if (_availableTo != null) 'availableTo': _availableTo!.toIso8601String(),
+    });
   }
 
   @override
   void dispose() {
+    _draftTimer?.cancel();
+    if (!_posted) _saveDraft();
     _workerCountController.dispose();
     _descriptionController.dispose();
+    _skillDetailsController.dispose();
     super.dispose();
   }
 
   Future<void> _post() async {
     final l = AppLocalizations.of(context);
+    if (widget.company.suspended) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(l.accountSuspendedPostBlocked(widget.company.suspensionReason)),
+          backgroundColor: AppColors.error,
+          duration: const Duration(seconds: 6),
+        ),
+      );
+      return;
+    }
     if (!_isValid) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -110,14 +188,16 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
               ? now.add(const Duration(days: 7))
               : now.add(const Duration(days: 14));
 
-      final typeWord = _type == CapacityType.offer ? 'verfügbar' : 'gesucht';
-
       final capacity = CapacityModel(
         id: '',
         type: _type,
         status: CapacityStatus.active,
         availabilityType: _availabilityType,
-        title: '$_workerCount $_selectedTrade $typeWord',
+        // Crew-led title ("Maler-Kolonne verfügbar"), matching autoTitle() —
+        // never headcount-first ("3 Maler verfügbar").
+        title: _type == CapacityType.offer
+            ? l.postTitleOffer(l.tradeName(_selectedTrade))
+            : l.postTitleNeed(l.tradeName(_selectedTrade)),
         description: _descriptionController.text.trim(),
         trade: _selectedTrade,
         location: _selectedDistrict,
@@ -129,6 +209,17 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
         posterVerified: widget.company.isVerified,
         posterRatingSum: widget.company.ratingSum,
         posterRatingCount: widget.company.ratingCount,
+        posterSuspended: widget.company.suspended,
+        posterAvgResponseHours: widget.company.avgResponseHours,
+        districtCoordinates: CapacityModel.coordinatesForLocation(_selectedDistrict),
+        dayRateBand: _dayRateBand,
+        skillDetails: _skillDetailsController.text.trim(),
+        visibilityMode: _visibilityMode,
+        posterCompanyId: _visibilityMode == CapacityVisibilityMode.anonymous ? null : widget.company.id,
+        posterCompanyName: _visibilityMode == CapacityVisibilityMode.anonymous ? null : widget.company.name,
+        posterLogoUrl: _visibilityMode == CapacityVisibilityMode.anonymous || widget.company.logoUrl.isEmpty
+            ? null
+            : widget.company.logoUrl,
       );
 
       // The identity sidecar — written to the locked capacityOwners/{id},
@@ -148,6 +239,8 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
       }
 
       AnalyticsService.logEvent('capacity_created', parameters: {'trade': _selectedTrade});
+      _posted = true;
+      FormDraftService.clear(_draftKey);
 
       if (mounted) {
         Navigator.pop(context);
@@ -311,9 +404,48 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
 
                   const SizedBox(height: 20),
 
-                  // SECTION 2: TRADE SELECTOR (VISUAL GRID)
+                  // SECTION 2: VISIBILITY MODE — chosen once, immutable
+                  // after posting (see CapacityModel.visibilityMode).
+                  // Placed right after Type since it's as fundamental a
+                  // choice as offer/need.
+                  _SectionLabel(label: l.section2Visibility),
+                  const SizedBox(height: 10),
+                  Column(
+                    children: [
+                      _VisibilityButton(
+                        label: l.visibilityVisibleLabel,
+                        subtitle: l.visibilityVisibleSubtitle,
+                        icon: Icons.storefront_outlined,
+                        color: AppColors.live,
+                        isSelected: _visibilityMode == CapacityVisibilityMode.visible,
+                        onTap: () => setState(() => _visibilityMode = CapacityVisibilityMode.visible),
+                      ),
+                      const SizedBox(height: 8),
+                      _VisibilityButton(
+                        label: l.visibilityDiscreetLabel,
+                        subtitle: l.visibilityDiscreetSubtitle,
+                        icon: Icons.shield_outlined,
+                        color: AppColors.distance,
+                        isSelected: _visibilityMode == CapacityVisibilityMode.discreet,
+                        onTap: () => setState(() => _visibilityMode = CapacityVisibilityMode.discreet),
+                      ),
+                      const SizedBox(height: 8),
+                      _VisibilityButton(
+                        label: l.visibilityAnonymousLabel,
+                        subtitle: l.visibilityAnonymousSubtitle,
+                        icon: Icons.visibility_off_outlined,
+                        color: c.textSecondary,
+                        isSelected: _visibilityMode == CapacityVisibilityMode.anonymous,
+                        onTap: () => setState(() => _visibilityMode = CapacityVisibilityMode.anonymous),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // SECTION 3: TRADE SELECTOR (VISUAL GRID)
                   _SectionLabel(
-                    label: l.section2Trade,
+                    label: l.section3Trade,
                   ),
                   const SizedBox(height: 10),
                   Wrap(
@@ -355,8 +487,8 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
 
                   const SizedBox(height: 20),
 
-                  // SECTION 3: AVAILABILITY
-                  _SectionLabel(label: l.section3When),
+                  // SECTION 4: AVAILABILITY
+                  _SectionLabel(label: l.section4When),
                   const SizedBox(height: 10),
                   Column(
                     children: [
@@ -484,9 +616,9 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
 
                   const SizedBox(height: 20),
 
-                  // SECTION 4: HAMBURG DISTRICT
+                  // SECTION 5: HAMBURG DISTRICT
                   _SectionLabel(
-                    label: l.section4LocationHamburg,
+                    label: l.section5LocationHamburg,
                   ),
                   const SizedBox(height: 10),
                   Wrap(
@@ -524,8 +656,8 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
 
                   const SizedBox(height: 20),
 
-                  // SECTION 5: WORKER COUNT
-                  _SectionLabel(label: l.section5WorkerCount),
+                  // SECTION 6: WORKER COUNT
+                  _SectionLabel(label: l.section6WorkerCount),
                   const SizedBox(height: 10),
                   Container(
                     padding: const EdgeInsets.symmetric(
@@ -540,7 +672,7 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                     child: Row(
                       children: [
                         Text(
-                          l.persons,
+                          l.teamSizeLabel,
                           style: TextStyle(
                             color: c.textSecondary,
                             fontSize: 15,
@@ -603,9 +735,9 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
 
                   const SizedBox(height: 20),
 
-                  // SECTION 6: DESCRIPTION
+                  // SECTION 7: DESCRIPTION
                   _SectionLabel(
-                    label: l.section6Description,
+                    label: l.section7Description,
                   ),
                   const SizedBox(height: 10),
                   TextField(
@@ -628,6 +760,61 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                         fontSize: 12,
                       ),
                     ),
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // SECTION 8: ADDITIONAL DETAILS (optional) — CapacityOS
+                  // readiness: skill/equipment granularity below the fixed
+                  // trade list, and a self-reported day-rate band (left
+                  // unset by default — day rates are commercially sensitive,
+                  // so disclosing one is each company's own call, never
+                  // required by this form).
+                  _SectionLabel(label: l.section8AdditionalDetails),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _skillDetailsController,
+                    maxLength: 120,
+                    style: TextStyle(color: c.textPrimary, fontSize: 14),
+                    decoration: InputDecoration(
+                      labelText: l.skillDetailsLabel,
+                      hintText: l.skillDetailsHint,
+                      hintStyle: TextStyle(color: c.textTertiary, fontSize: 13),
+                      counterStyle: TextStyle(color: c.textSecondary, fontSize: 12),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(l.dayRateBandLabel,
+                      style: TextStyle(color: c.textSecondary, fontSize: 14, fontWeight: FontWeight.w500)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [null, ...kDayRateBands].map((band) {
+                      final isSelected = _dayRateBand == (band ?? '');
+                      return GestureDetector(
+                        onTap: () => setState(() => _dayRateBand = band ?? ''),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                          decoration: BoxDecoration(
+                            color: isSelected ? AppColors.primary.withOpacity(0.2) : c.surface,
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: isSelected ? AppColors.primary : c.border,
+                              width: isSelected ? 2 : 1,
+                            ),
+                          ),
+                          child: Text(
+                            band == null ? l.dayRateBandUndisclosed : l.dayRateBandName(band),
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: isSelected ? FontWeight.w700 : FontWeight.normal,
+                              color: isSelected ? AppColors.primary : c.textSecondary,
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
                   ),
 
                   const SizedBox(height: 24),
@@ -674,7 +861,9 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                '$_workerCount ${l.tradeName(_selectedTrade)} ${_type == CapacityType.offer ? l.titleAvailableSuffix : l.titleWantedSuffix}',
+                                _type == CapacityType.offer
+                                    ? l.postTitleOffer(l.tradeName(_selectedTrade))
+                                    : l.postTitleNeed(l.tradeName(_selectedTrade)),
                                 style: TextStyle(
                                   fontSize: 13,
                                   fontWeight: FontWeight.w700,
@@ -682,7 +871,7 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                                 ),
                               ),
                               Text(
-                                '$_selectedDistrict · ${_availabilityType == AvailabilityType.now ? l.availNowBadge : _availabilityType == AvailabilityType.thisWeek ? l.availThisWeekBadge : l.availNextWeekBadge}',
+                                '$_workerCount ${l.persons} · $_selectedDistrict · ${_availabilityType == AvailabilityType.now ? l.availNowBadge : _availabilityType == AvailabilityType.thisWeek ? l.availThisWeekBadge : l.availNextWeekBadge}',
                                 style: TextStyle(
                                   fontSize: 11,
                                   color: c.textSecondary,
@@ -869,6 +1058,60 @@ class _AvailabilityButton extends StatelessWidget {
               ),
             ),
             Icon(Icons.calendar_today_outlined, size: 16, color: isSelected ? color : c.textSecondary),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// Same visual shape as _AvailabilityButton (full-width row, dot indicator,
+// label+subtitle, trailing icon) — a dedicated widget rather than reusing
+// _AvailabilityButton directly since that one is typed to AvailabilityType.
+class _VisibilityButton extends StatelessWidget {
+  final String label;
+  final String subtitle;
+  final IconData icon;
+  final Color color;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  const _VisibilityButton({
+    required this.label,
+    required this.subtitle,
+    required this.icon,
+    required this.color,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: isSelected ? color.withOpacity(0.12) : c.surface,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: isSelected ? color : c.border, width: isSelected ? 2 : 1),
+        ),
+        child: Row(
+          children: [
+            Container(width: 12, height: 12, decoration: BoxDecoration(shape: BoxShape.circle, color: isSelected ? color : c.border)),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: isSelected ? color : c.textPrimary)),
+                  Text(subtitle, style: TextStyle(fontSize: 11, color: c.textSecondary, height: 1.3)),
+                ],
+              ),
+            ),
+            Icon(icon, size: 16, color: isSelected ? color : c.textSecondary),
           ],
         ),
       ),

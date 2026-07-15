@@ -57,13 +57,25 @@ class ReceivedRequestsScreen extends ConsumerWidget {
                   }
                   final posts = ref.watch(myCapacitiesProvider(uid)).valueOrNull ?? [];
                   final postsById = {for (final p in posts) p.id: p};
-                  return ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(20, 20, 20, 80),
+                  // Centered + width-capped, same as my_capacities_screen.dart's
+                  // list — this used to have no width constraint at all and
+                  // stretched full-width on desktop.
+                  return ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(0, 16, 0, 80),
                     itemCount: requests.length,
-                    itemBuilder: (_, i) => _RequestCard(
-                      request: requests[i],
-                      post: postsById[requests[i].postId],
-                      posterCompanyId: uid,
+                    separatorBuilder: (_, __) => const SizedBox(height: 12),
+                    itemBuilder: (_, i) => Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 920),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 24),
+                          child: _RequestCard(
+                            request: requests[i],
+                            post: postsById[requests[i].postId],
+                            posterCompanyId: uid,
+                          ),
+                        ),
+                      ),
                     ),
                   );
                 },
@@ -85,6 +97,7 @@ class _RequestCard extends ConsumerStatefulWidget {
 
 class _RequestCardState extends ConsumerState<_RequestCard> {
   bool _busy = false;
+  bool _hovered = false;
 
   Future<void> _accept() async {
     final l = AppLocalizations.of(context);
@@ -95,6 +108,9 @@ class _RequestCardState extends ConsumerState<_RequestCard> {
             posterCompanyId: widget.posterCompanyId,
             requestCreatedAt: widget.request.createdAt,
           );
+      // Accepting IS the acknowledgment — don't also require opening the
+      // chat before the sidebar's Kontakte badge clears for this request.
+      await ref.read(contactRequestServiceProvider).markSeenByPoster(widget.request.id);
       AnalyticsService.logEvent('request_accepted');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -171,15 +187,33 @@ class _RequestCardState extends ConsumerState<_RequestCard> {
         : l.receivedRequestFrom(r.requesterCity);
     final who = isPending ? anonName : r.requesterCompanyName;
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: c.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: isPending ? color.withOpacity(0.4) : c.border, width: 1.5),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    // Same card shell as _MyRequestTile in my_requests_screen.dart (top
+    // accent strip, 14px radius, hover border/shadow glow) — this used to be
+    // a plain bordered box with no hover state and a slightly different
+    // radius, the one visible inconsistency between the two "Anfragen" pages.
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        decoration: BoxDecoration(
+          color: c.surface,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: _hovered ? color.withOpacity(0.45) : (isPending ? color.withOpacity(0.4) : c.border),
+            width: 1.5,
+          ),
+          boxShadow: _hovered
+              ? [BoxShadow(color: color.withOpacity(0.14), blurRadius: 20, offset: const Offset(0, 6))]
+              : null,
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Container(height: 4, color: color),
+            Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         // Status + post reference
         Row(children: [
           Container(
@@ -194,6 +228,27 @@ class _RequestCardState extends ConsumerState<_RequestCard> {
               style: TextStyle(color: color, fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 0.3),
             ),
           ),
+          // Shown for pending (jumps the accept queue) AND granted (an
+          // auto-granted visible/discreet request has no queue, but the
+          // "time-sensitive" signal still matters) — the badge text itself
+          // is generic enough to read correctly in either context.
+          if (r.urgent) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: AppColors.error.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(5),
+                border: Border.all(color: AppColors.error.withOpacity(0.35)),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                const Text('🔥', style: TextStyle(fontSize: 9)),
+                const SizedBox(width: 3),
+                Text(l.urgentRequestBadge,
+                    style: const TextStyle(color: AppColors.error, fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 0.3)),
+              ]),
+            ),
+          ],
           const Spacer(),
           Flexible(
             child: Text('${l.receivedRequestForPostLabel}: $postRef',
@@ -284,6 +339,10 @@ class _RequestCardState extends ConsumerState<_RequestCard> {
             ),
           ),
       ]),
+            ),
+          ]),
+        ),
+      ),
     );
   }
 }

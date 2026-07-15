@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../constants/app_constants.dart';
 import '../localization/app_localizations.dart';
 
 enum CapacityType { offer, need }
@@ -12,12 +13,29 @@ enum CapacityStatus {
 
 enum AvailabilityType { now, thisWeek, nextWeek, custom }
 
-// PUBLIC, anonymized post. Deliberately carries NO poster identity — no
-// companyId/name/city/phone/email/verified. Identity lives only in the
-// locked capacityOwners/{id} sidecar (see CapacityOwnerModel), released by
-// Firestore rules to the owner, an admin, or a granted contact requester.
-// The Firestore auto-id is the only post identifier and links nothing across
-// a firm's posts.
+// Chosen once at creation, immutable afterward (excluded from
+// toFirestoreForUpdate — see there). `visible`/`discreet` are functionally
+// identical (name + logo + verified badge shown, contact still gated) —
+// discreet is framing/copy only, not a technical restriction. `anonymous` is
+// today's original behavior: zero identity on the post, and the only mode
+// that still requires the poster's deliberate Accept before a contact
+// request grants (see ContactRequestService.requestContact).
+enum CapacityVisibilityMode { visible, discreet, anonymous }
+
+// PUBLIC post. For `anonymous` posts (still the default for any pre-existing
+// document with no visibilityMode field — see fromFirestore), this carries NO
+// poster identity — no companyId/name/city/phone/email/verified; identity
+// lives only in the locked capacityOwners/{id} sidecar (see
+// CapacityOwnerModel), released by Firestore rules to the owner, an admin, or
+// a granted contact requester. For `visible`/`discreet` posts, posterCompanyId/
+// posterCompanyName/posterLogoUrl ARE present directly on this doc (a
+// snapshot, not a live join — same pattern as posterVerified/posterRatingSum
+// below — since companies/{id} is already fully public, so this only
+// determines whether identity shows up on the anonymized feed itself).
+// Contact details (phone/email) stay in the locked sidecar regardless of
+// mode — visibilityMode only ever controls whether IDENTITY is exposed here,
+// never contact info. The Firestore auto-id is the only post identifier and
+// links nothing across a firm's posts.
 class CapacityModel {
   final String id;
   final CapacityType type;
@@ -48,9 +66,47 @@ class CapacityModel {
   final bool posterVerified;
   final int posterRatingSum;
   final int posterRatingCount;
+  // Snapshot of the poster's CompanyModel.suspended, batch-flipped onto every
+  // one of their posts by AdminService.suspendCompany/unsuspendCompany (same
+  // snapshot-not-live-join pattern as posterVerified above). Hides the post
+  // from the public feed — see CapacityService.getCapacities — without
+  // requiring a feed-time join against the company doc.
+  final bool posterSuspended;
+  // Poster's responsiveness (see CompanyModel.avgResponseHours), synced onto
+  // every one of their posts so it's visible on the anonymized CARD itself —
+  // the actual decision point for "who do I contact," which is before their
+  // profile (and thus their responsiveness) would otherwise be viewable at
+  // all for an anonymized post. Null until they have >=3 samples (same
+  // no-noisy-single-sample rule as the company-level getter).
+  final int? posterAvgResponseHours;
+  // CapacityOS readiness — additive, all optional, cheap to capture now vs.
+  // expensive to backfill onto months of historical posts later.
+  // Derived automatically from `location` via kHamburgDistrictCoordinates —
+  // never user-entered — so it's always consistent with the district string,
+  // or absent if that string doesn't match a known district (e.g. edited to
+  // free text away from the original dropdown value).
+  final GeoPoint? districtCoordinates;
+  // Self-reported day-rate band (see kDayRateBands) — '' means undisclosed.
+  final String dayRateBand;
+  // Free-text specifics below the fixed trade granularity (e.g. "Führerschein
+  // Klasse B, Hubarbeitsbühne-Schein") — optional.
+  final String skillDetails;
+  // See the enum doc above. null-valued identity fields below ⇒ anonymous.
+  final CapacityVisibilityMode visibilityMode;
+  final String? posterCompanyId;
+  final String? posterCompanyName;
+  final String? posterLogoUrl;
 
   double get posterRating =>
       posterRatingCount > 0 ? posterRatingSum / posterRatingCount : 0.0;
+
+  /// Looks up the approximate centroid for a known Hamburg district string —
+  /// null if [location] doesn't exactly match one (see kHamburgDistrictCoordinates).
+  static GeoPoint? coordinatesForLocation(String location) {
+    final coords = kHamburgDistrictCoordinates[location];
+    if (coords == null) return null;
+    return GeoPoint(coords.$1, coords.$2);
+  }
 
   CapacityModel({
     required this.id,
@@ -77,6 +133,15 @@ class CapacityModel {
     this.posterVerified = false,
     this.posterRatingSum = 0,
     this.posterRatingCount = 0,
+    this.posterSuspended = false,
+    this.posterAvgResponseHours,
+    this.districtCoordinates,
+    this.dayRateBand = '',
+    this.skillDetails = '',
+    this.visibilityMode = CapacityVisibilityMode.visible,
+    this.posterCompanyId,
+    this.posterCompanyName,
+    this.posterLogoUrl,
   });
 
   // ─── fromFirestore ───
@@ -135,6 +200,15 @@ class CapacityModel {
       posterVerified: data['posterVerified'] as bool? ?? false,
       posterRatingSum: data['posterRatingSum'] ?? 0,
       posterRatingCount: data['posterRatingCount'] ?? 0,
+      posterSuspended: data['posterSuspended'] as bool? ?? false,
+      posterAvgResponseHours: data['posterAvgResponseHours'] as int?,
+      districtCoordinates: data['districtCoordinates'] as GeoPoint?,
+      dayRateBand: data['dayRateBand'] as String? ?? '',
+      skillDetails: data['skillDetails'] as String? ?? '',
+      visibilityMode: _visibilityModeFromString(data['visibilityMode'] as String?),
+      posterCompanyId: data['posterCompanyId'] as String?,
+      posterCompanyName: data['posterCompanyName'] as String?,
+      posterLogoUrl: data['posterLogoUrl'] as String?,
     );
   }
 
@@ -160,6 +234,15 @@ class CapacityModel {
       'posterVerified': posterVerified,
       'posterRatingSum': posterRatingSum,
       'posterRatingCount': posterRatingCount,
+      'posterSuspended': posterSuspended,
+      if (posterAvgResponseHours != null) 'posterAvgResponseHours': posterAvgResponseHours,
+      if (districtCoordinates != null) 'districtCoordinates': districtCoordinates,
+      'dayRateBand': dayRateBand,
+      'skillDetails': skillDetails,
+      'visibilityMode': visibilityModeToString(visibilityMode),
+      if (posterCompanyId != null) 'posterCompanyId': posterCompanyId,
+      if (posterCompanyName != null) 'posterCompanyName': posterCompanyName,
+      if (posterLogoUrl != null) 'posterLogoUrl': posterLogoUrl,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
       'availabilityConfirmedAt': FieldValue.serverTimestamp(),
@@ -188,6 +271,15 @@ class CapacityModel {
       'availableFrom': Timestamp.fromDate(availableFrom),
       'availableTo': Timestamp.fromDate(availableTo),
       'contentFlagged': contentFlagged,
+      // Recomputed by the caller from the (possibly-changed) location string
+      // before this is built — see CapacityModel.coordinatesForLocation.
+      // FieldValue.delete() rather than omitting the key: if location was
+      // edited away from a known district back to unrecognized free text,
+      // the stale coordinates must be cleared, not left pointing at the OLD
+      // district.
+      'districtCoordinates': districtCoordinates ?? FieldValue.delete(),
+      'dayRateBand': dayRateBand,
+      'skillDetails': skillDetails,
       // Bump freshness on every edit — drives the "Aktualisiert …" label.
       'updatedAt': FieldValue.serverTimestamp(),
     };
@@ -205,6 +297,32 @@ class CapacityModel {
         return CapacityStatus.cancelled;
       default:
         return CapacityStatus.active;
+    }
+  }
+
+  // Missing/unrecognized ⇒ anonymous. Every document written before this
+  // field existed really was 100% anonymous — that's the only truthful
+  // default — and it's also fail-closed for any future malformed doc: never
+  // accidentally leaks identity that was never validated.
+  static CapacityVisibilityMode _visibilityModeFromString(String? s) {
+    switch (s) {
+      case 'visible':
+        return CapacityVisibilityMode.visible;
+      case 'discreet':
+        return CapacityVisibilityMode.discreet;
+      default:
+        return CapacityVisibilityMode.anonymous;
+    }
+  }
+
+  static String visibilityModeToString(CapacityVisibilityMode m) {
+    switch (m) {
+      case CapacityVisibilityMode.visible:
+        return 'visible';
+      case CapacityVisibilityMode.discreet:
+        return 'discreet';
+      case CapacityVisibilityMode.anonymous:
+        return 'anonymous';
     }
   }
 

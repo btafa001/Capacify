@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/services/chat_provider.dart';
 import '../../../core/services/company_provider.dart';
+import '../../../core/services/capacity_provider.dart';
 import '../../../core/services/contact_request_provider.dart';
 import '../../../core/services/analytics_service.dart';
 import '../../../core/services/report_provider.dart';
@@ -37,9 +39,20 @@ class ChatScreen extends ConsumerStatefulWidget {
 
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _controller = TextEditingController();
+  final _composerFocus = FocusNode();
   final _scroll = ScrollController();
   bool _sending = false;
   DateTime? _lastTypingSent;
+  // Gates watching the chat doc/messages until ensureChat()'s create has
+  // actually landed. messages/{messageId}'s read rule get()s the PARENT chat
+  // doc — on a brand-new chat (first-ever contact between two companies),
+  // watching messages before that parent exists denies the WHOLE listener,
+  // and Firestore doesn't auto-retry a denied snapshot listener on its own.
+  // That's what showed up as one side of a first contact being unable to
+  // open the chat at all, while the separately-delivered push notification
+  // still arrived fine — it self-"fixed" only once something else (like
+  // navigating away and back) remounted this screen after the doc existed.
+  bool _chatReady = false;
 
   List<String> get _participants => [widget.myCompanyId, widget.otherCompanyId];
 
@@ -55,14 +68,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           participants: _participants,
           postId: widget.postId,
         )
-        .then((_) => ref
-            .read(chatServiceProvider)
-            .markRead(chatId: widget.chatId, uid: widget.myCompanyId));
+        .then((_) {
+      ref.read(chatServiceProvider).markRead(chatId: widget.chatId, uid: widget.myCompanyId);
+      if (mounted) setState(() => _chatReady = true);
+    });
+    // Also mark the underlying contact_request "seen" for my_capacities_
+    // screen.dart's re-engagement badge — harmless no-op if I'm the
+    // requester, not the poster (firestore.rules only allows the poster to
+    // set this, and markSeenByPoster swallows the resulting rejection; no
+    // client-side role check needed).
+    ref.read(contactRequestServiceProvider).markSeenByPoster(widget.chatId);
   }
 
   @override
   void dispose() {
     _controller.dispose();
+    _composerFocus.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -110,6 +131,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
     } finally {
       if (mounted) setState(() => _sending = false);
+      // Tapping the send button (a separate focusable widget) takes keyboard
+      // focus away from the composer, so without this the field looked
+      // "done" after every message and needed a fresh tap before you could
+      // type the next one.
+      _composerFocus.requestFocus();
     }
   }
 
@@ -168,6 +194,46 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
+  // Only ever reachable once the underlying post is closed/cancelled (see
+  // the menu item's own gating in build()) — deleteChat re-checks that
+  // server-side regardless. Chats can't be deleted directly by the client
+  // (firestore.rules: allow delete: if false, since the messages
+  // subcollection needs a recursive delete only the Admin SDK can do), so
+  // this goes through a Cloud Function, same pattern as purgeUserData.
+  Future<void> _deleteChat() async {
+    final l = AppLocalizations.of(context);
+    final c = AppColors.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: c.surface,
+        title: Text(l.deleteChatConfirmTitle,
+            style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.w900, fontSize: 17)),
+        content: Text(l.deleteChatConfirmBody,
+            style: TextStyle(color: c.textSecondary, fontSize: 14, height: 1.5)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(l.cancel)),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l.deleteButton, style: const TextStyle(color: AppColors.error, fontWeight: FontWeight.w900)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await FirebaseFunctions.instanceFor(region: 'europe-west3')
+          .httpsCallable('deleteChat')
+          .call({'chatId': widget.chatId});
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(l.errorWithMessage(e)), backgroundColor: AppColors.error));
+      }
+    }
+  }
+
   void _jumpToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
@@ -193,6 +259,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
+    // Delete is only ever offered once the match is actually done — while a
+    // post is still active/in-progress either side might still need the
+    // thread.
+    final post = ref.watch(capacityByIdProvider(widget.postId)).valueOrNull;
+    final canDelete = post != null && (post.isClosed || post.isCancelled);
     final company = ref.watch(companyByIdProvider(widget.otherCompanyId)).valueOrNull;
     final title = (company?.name.isNotEmpty ?? false)
         ? company!.name
@@ -200,7 +271,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ? widget.otherCompanyName
             : l.chatFallbackTitle);
 
-    final chat = ref.watch(chatDocProvider(widget.chatId)).valueOrNull;
+    // Not watched until ensureChat() has confirmed the parent chat doc
+    // exists — see _chatReady's doc comment.
+    final chat = _chatReady ? ref.watch(chatDocProvider(widget.chatId)).valueOrNull : null;
     final otherTyping = chat?.isOtherTyping(widget.myCompanyId) ?? false;
     final otherReadAt = chat?.lastReadBy(widget.otherCompanyId);
 
@@ -211,7 +284,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           .markRead(chatId: widget.chatId, uid: widget.myCompanyId));
     }
 
-    final messagesAsync = ref.watch(chatMessagesProvider(widget.chatId));
+    // Same _chatReady gating as chat above — only non-null once ensureChat()
+    // has confirmed the parent doc exists, so it's safe to force-unwrap
+    // wherever it's used below (only ever reached in the _chatReady branch).
+    final messagesAsync = _chatReady ? ref.watch(chatMessagesProvider(widget.chatId)) : null;
 
     return Scaffold(
       backgroundColor: c.background,
@@ -259,6 +335,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             icon: Icon(Icons.more_vert, color: c.textSecondary),
             onSelected: (v) {
               if (v == 'report') _reportUser();
+              if (v == 'delete') _deleteChat();
             },
             itemBuilder: (ctx) => [
               PopupMenuItem(
@@ -269,6 +346,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   Text(l.reportUser, style: TextStyle(color: c.textPrimary)),
                 ]),
               ),
+              // Only offered once the match is closed/cancelled.
+              if (canDelete)
+                PopupMenuItem(
+                  value: 'delete',
+                  child: Row(children: [
+                    const Icon(Icons.delete_outline, size: 18, color: AppColors.error),
+                    const SizedBox(width: 10),
+                    Text(l.deleteChatAction, style: TextStyle(color: c.textPrimary)),
+                  ]),
+                ),
             ],
           ),
         ],
@@ -284,11 +371,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   border: Border.symmetric(vertical: BorderSide(color: c.border)),
                 )
               : null,
-          child: Column(
+          child: !_chatReady
+              ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+              : Column(
         children: [
           _CollabBanner(chatId: widget.chatId, myCompanyId: widget.myCompanyId),
           Expanded(
-            child: messagesAsync.when(
+            child: messagesAsync!.when(
               loading: () =>
                   const Center(child: CircularProgressIndicator(color: AppColors.primary)),
               error: (e, _) => Center(
@@ -358,6 +447,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   Expanded(
                     child: TextField(
                       controller: _controller,
+                      focusNode: _composerFocus,
                       minLines: 1,
                       maxLines: 5,
                       onChanged: _onChanged,
@@ -510,6 +600,66 @@ class _Bubble extends StatelessWidget {
   }
 }
 
+/// Prompts for what actually happened (CapacityOS outcome data) before
+/// confirming a collaboration — crew size prefilled from the original post,
+/// duration optional. Returns null only if the dialog is dismissed entirely
+/// (Cancel/tap-outside); tapping the primary button always returns a result,
+/// using whatever's currently in the fields — nothing here is required.
+Future<({int crewSize, int? durationDays})?> _promptCollabOutcome(
+  BuildContext context,
+  AppLocalizations l, {
+  required int defaultCrewSize,
+}) {
+  final crewController = TextEditingController(text: defaultCrewSize.toString());
+  final durationController = TextEditingController();
+  return showDialog<({int crewSize, int? durationDays})>(
+    context: context,
+    builder: (ctx) {
+      final c = AppColors.of(ctx);
+      return AlertDialog(
+        backgroundColor: c.surface,
+        title: Text(l.collabOutcomeDialogTitle,
+            style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.w900, fontSize: 17)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(l.collabOutcomeDialogBody,
+                style: TextStyle(color: c.textSecondary, fontSize: 13, height: 1.4)),
+            const SizedBox(height: 16),
+            TextField(
+              controller: crewController,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(labelText: l.collabActualCrewSizeLabel),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: durationController,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(labelText: l.collabActualDurationLabel),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+            onPressed: () {
+              final crewSize = int.tryParse(crewController.text.trim()) ?? defaultCrewSize;
+              final durationDays = int.tryParse(durationController.text.trim());
+              Navigator.pop(ctx, (crewSize: crewSize, durationDays: durationDays));
+            },
+            child: Text(l.collabConfirmButton),
+          ),
+        ],
+      );
+    },
+  ).whenComplete(() {
+    crewController.dispose();
+    durationController.dispose();
+  });
+}
+
 /// Mutual "we worked together" confirmation, shown at the top of a granted
 /// connection's chat. Each side confirms once; when both have, a Cloud Function
 /// counts the completed collaboration for both companies (trust + CapacityOS).
@@ -528,8 +678,32 @@ class _CollabBanner extends ConsumerWidget {
     final isRequester = req.requesterCompanyId == myCompanyId;
     final iConfirmed = isRequester ? req.collabRequester : req.collabPoster;
 
+    // Urgent marker — reuses this already-watched request doc rather than
+    // threading a new param through every ChatScreen call site. A chat can
+    // only ever be open once a request is granted (regardless of mode), so
+    // there's no separate "still pending" case to worry about here — this
+    // reads correctly whether the grant came from an Accept (anonymous) or
+    // was instant (visible/discreet).
+    final urgentChip = req.urgent
+        ? Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            color: AppColors.error.withOpacity(0.08),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Text('🔥', style: TextStyle(fontSize: 11)),
+              const SizedBox(width: 5),
+              Text(l.urgentRequestBadge,
+                  style: const TextStyle(color: AppColors.error, fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 0.3)),
+            ]),
+          )
+        : null;
+
+    Widget wrap(Widget banner) => urgentChip == null
+        ? banner
+        : Column(mainAxisSize: MainAxisSize.min, children: [urgentChip, banner]);
+
     if (req.collabConfirmed) {
-      return Container(
+      return wrap(Container(
         width: double.infinity,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         color: AppColors.live.withOpacity(0.10),
@@ -539,11 +713,11 @@ class _CollabBanner extends ConsumerWidget {
           Text(l.collabConfirmedBoth,
               style: const TextStyle(color: AppColors.live, fontSize: 13, fontWeight: FontWeight.w800)),
         ]),
-      );
+      ));
     }
 
     if (iConfirmed) {
-      return Container(
+      return wrap(Container(
         width: double.infinity,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         color: c.surfaceVariant,
@@ -553,10 +727,10 @@ class _CollabBanner extends ConsumerWidget {
           Expanded(child: Text(l.collabWaitingPartner,
               style: TextStyle(color: c.textSecondary, fontSize: 12.5))),
         ]),
-      );
+      ));
     }
 
-    return Container(
+    return wrap(Container(
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
       decoration: BoxDecoration(
@@ -592,11 +766,15 @@ class _CollabBanner extends ConsumerWidget {
                 padding: const EdgeInsets.symmetric(vertical: 10),
               ),
               onPressed: () async {
+                final outcome = await _promptCollabOutcome(context, l, defaultCrewSize: req.workerCount);
+                if (outcome == null || !context.mounted) return;
                 final otherAlready = isRequester ? req.collabPoster : req.collabRequester;
                 try {
                   await ref.read(contactRequestServiceProvider).confirmCollaboration(
                         requestId: chatId,
                         asPoster: !isRequester,
+                        actualCrewSize: outcome.crewSize,
+                        actualDurationDays: outcome.durationDays,
                       );
                   if (!context.mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -626,6 +804,6 @@ class _CollabBanner extends ConsumerWidget {
           ),
         ],
       ),
-    );
+    ));
   }
 }

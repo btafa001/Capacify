@@ -50,6 +50,7 @@ class _ForgotPasswordScreenState
       final authService = ref.read(authServiceProvider);
       await authService.sendPasswordResetEmail(
         _emailController.text.trim(),
+        suppressUserNotFound: true,
       );
       setState(() {
         _emailSent = true;

@@ -160,6 +160,7 @@ class AGBScreen extends StatelessWidget {
                   paragraphs: [
                     'Eine Verifizierung bestätigt ausschließlich, dass bestimmte Informationen oder Dokumente geprüft wurden.',
                     'Eine Verifizierung stellt keine Garantie für Qualität, Zuverlässigkeit, Leistungsfähigkeit oder Vertragstreue dar.',
+                    'Die Verifizierung bezieht sich ausschließlich auf die umsatzsteuerliche Erfassung des Unternehmens (Abgleich der USt-IdNr. über das EU-Mehrwertsteuer-Informationsaustauschsystem, VIES). Sie bestätigt weder eine Eintragung in die Handwerksrolle noch das Vorliegen sonstiger gewerbe- oder berufsrechtlicher Zulassungen, etwa der Meisterpflicht bei zulassungspflichtigen Handwerken gemäß Anlage A der Handwerksordnung.',
                   ],
                 ),
 
@@ -172,6 +173,7 @@ class AGBScreen extends StatelessWidget {
                   ],
                   bulletPoints: [
                     'Gewerbeanmeldung',
+                    'Handwerksrechtliche Zulassungen (z. B. Eintragung in die Handwerksrolle bei zulassungspflichtigen Handwerken)',
                     'Referenzen',
                     'Versicherungen',
                     'Qualifikationen',
@@ -180,16 +182,29 @@ class AGBScreen extends StatelessWidget {
 
                 const _LegalSection(
                   number: '9.',
-                  title: 'Arbeitnehmerüberlassung',
+                  title: 'Arbeitnehmerüberlassung und Nachunternehmereinsatz',
                   paragraphs: [
-                    'Capacify bietet keine Arbeitnehmerüberlassung an.',
+                    'Capacify bietet keine Arbeitnehmerüberlassung im Sinne des Arbeitnehmerüberlassungsgesetzes (AÜG) an und verfügt nicht über eine Erlaubnis nach § 1 AÜG.',
                     'Capacify beschäftigt keine Arbeitnehmer zur Weitervermittlung.',
-                    'Nutzer handeln ausschließlich im eigenen Namen und auf eigene Verantwortung.',
+                    'Über Capacify angebahnte Kontakte dienen ausschließlich der Anbahnung eigenständiger vertraglicher Beziehungen zwischen den Nutzern, insbesondere in Form von Werk-, Dienst- oder Subunternehmerverträgen. Nutzer handeln stets im eigenen Namen und auf eigene Verantwortung.',
+                    'Die rechtlich zutreffende Ausgestaltung der Zusammenarbeit obliegt allein den beteiligten Nutzern. Im Baugewerbe ist Arbeitnehmerüberlassung gemäß § 1b AÜG grundsätzlich untersagt. Eine unzulässige (verdeckte) Arbeitnehmerüberlassung kann insbesondere dann vorliegen, wenn eingesetztes Personal in den Betrieb des auftraggebenden Unternehmens eingegliedert wird und dessen Weisungen unterliegt, anstatt eine eigenverantwortlich organisierte und geleitete Werkleistung zu erbringen.',
+                    'Capacify empfiehlt Nutzern dringend, jede über die Plattform angebahnte Zusammenarbeit durch einen schriftlichen Werk- oder Subunternehmervertrag zu dokumentieren, der den Leistungsumfang sowie die eigenverantwortliche Leitung und Weisungsbefugnis des Auftragnehmers gegenüber seinem eigenen Personal festlegt.',
+                    'Capacify prüft nicht, ob eine über die Plattform angebahnte Zusammenarbeit den Anforderungen des AÜG oder sonstiger arbeits- und sozialversicherungsrechtlicher Vorschriften entspricht.',
                   ],
                 ),
 
                 const _LegalSection(
                   number: '10.',
+                  title: 'Nachunternehmerketten und Mindestlohn',
+                  paragraphs: [
+                    'Beauftragt ein Nutzer über Capacify ein anderes Unternehmen mit der Erbringung von Bauleistungen, kann er als Auftraggeber innerhalb einer Nachunternehmerkette gesetzlichen Haftungsregelungen unterliegen, insbesondere der Auftraggeberhaftung für den Mindestlohn seiner Nachunternehmer nach § 14 Arbeitnehmer-Entsendegesetz (AEntG).',
+                    'Nutzer sind verpflichtet, die im Baugewerbe geltenden Mindestlohn- und sonstigen arbeitsrechtlichen Vorschriften – unter anderem nach dem AEntG und den einschlägigen Tarifverträgen (z. B. SOKA-BAU) – sowohl im eigenen Betrieb als auch bei der Auswahl ihrer Vertragspartner zu beachten.',
+                    'Capacify prüft nicht, ob Nutzer diese Vorschriften einhalten.',
+                  ],
+                ),
+
+                const _LegalSection(
+                  number: '11.',
                   title: 'Haftung',
                   paragraphs: [
                     'Soweit gesetzlich zulässig, haftet Capacify nur für vorsätzlich oder grob fahrlässig verursachte Schäden.',
@@ -204,7 +219,7 @@ class AGBScreen extends StatelessWidget {
                 ),
 
                 const _LegalSection(
-                  number: '11.',
+                  number: '12.',
                   title: 'Sperrung von Konten',
                   paragraphs: [
                     'Capacify kann Nutzerkonten sperren oder löschen, wenn:',
@@ -217,7 +232,17 @@ class AGBScreen extends StatelessWidget {
                 ),
 
                 const _LegalSection(
-                  number: '12.',
+                  number: '13.',
+                  title: 'Unternehmereigenschaft (§ 14 BGB)',
+                  paragraphs: [
+                    'Capacify richtet sich ausschließlich an Unternehmer im Sinne des § 14 BGB, nicht an Verbraucher.',
+                    'Mit der Registrierung bestätigt der Nutzer, dass die Nutzung der Plattform im Rahmen seiner gewerblichen oder selbständigen beruflichen Tätigkeit erfolgt – unabhängig davon, ob ein förmlicher Handelsregistereintrag besteht.',
+                    'Verbraucherschutzvorschriften, insbesondere Regelungen zum Widerrufsrecht bei Fernabsatzverträgen, finden auf die Nutzung von Capacify keine Anwendung.',
+                  ],
+                ),
+
+                const _LegalSection(
+                  number: '14.',
                   title: 'Schlussbestimmungen',
                   paragraphs: [
                     'Es gilt deutsches Recht.',
@@ -318,6 +343,7 @@ class _LegalSection extends StatelessWidget {
           const SizedBox(height: 12),
 
           Container(
+            width: double.infinity,
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: c.surface,

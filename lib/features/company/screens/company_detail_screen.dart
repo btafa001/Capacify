@@ -7,6 +7,7 @@ import '../../../core/services/auth_provider.dart';
 import '../../../core/services/company_provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../shared/widgets/star_rating.dart';
+import '../../../shared/widgets/company_logo_avatar.dart';
 import '../../../core/services/analytics_service.dart';
 
 /// Opens a company's profile as a compact popup instead of pushing a
@@ -30,7 +31,20 @@ void showCompanyDetailDialog(BuildContext context, CompanyModel company) {
         padding: EdgeInsets.symmetric(horizontal: size.width < 600 ? 0 : 40, vertical: 24),
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: size.width < 600 ? size.width : 720, maxHeight: size.height * 0.88),
-          child: ClipRRect(borderRadius: BorderRadius.circular(16), child: CompanyDetailScreen(company: company)),
+          // RepaintBoundary + a key tied to the company force this dialog
+          // onto its own genuinely fresh, isolated compositing layer every
+          // time it opens. The animated ScaleTransition/FadeTransition here,
+          // stacked with ClipRRect and an inner scrollable, is exactly the
+          // kind of layered setup where Flutter Web's CanvasKit renderer can
+          // leave a stale layer from a PREVIOUS dialog bleeding into a new
+          // one instead of properly clearing it — matching a huge, wrongly
+          // positioned grey block that only appears after closing one
+          // company's dialog and reopening a different one, never on a
+          // clean first open.
+          child: RepaintBoundary(
+            key: ValueKey('company_detail_${company.id}'),
+            child: ClipRRect(borderRadius: BorderRadius.circular(16), child: CompanyDetailScreen(company: company)),
+          ),
         ),
       ),
     ),
@@ -88,19 +102,15 @@ class CompanyDetailScreen extends ConsumerWidget {
                   border: Border.all(color: c.border),
                 ),
                 child: Builder(builder: (context) {
-                  final avatar = CircleAvatar(
+                  // A SizedBox+ClipOval+Image.network wrapper was tried here
+                  // first and did NOT actually stop the huge-grey-box bug —
+                  // CompanyLogoAvatar uses CircleAvatar's backgroundImage
+                  // instead, the same mechanism already proven reliable for
+                  // the feed cards' avatars (see its own doc comment for why).
+                  final avatar = CompanyLogoAvatar(
+                    logoUrl: company.logoUrl,
+                    companyName: company.name,
                     radius: 40,
-                    backgroundColor: AppColors.primary.withOpacity(0.15),
-                    child: Text(
-                      company.name.isNotEmpty
-                          ? company.name[0].toUpperCase()
-                          : 'U',
-                      style: const TextStyle(
-                        color: AppColors.primary,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 32,
-                      ),
-                    ),
                   );
 
                   final info = Column(
@@ -541,8 +551,21 @@ class _RateButton extends ConsumerWidget {
     final existingRating = myRatingAsync.value;
     final raterCompanyName = myCompanyAsync.value?.name ?? '';
 
-    return OutlinedButton.icon(
-      onPressed: raterCompanyName.isEmpty
+    // A rating must be justified by a real, granted contact_request between
+    // the two companies — this is what the button offers; firestore.rules
+    // independently re-verifies it regardless (see submitRating).
+    final viaRequestIdAsync = ref.watch(
+      grantedRequestIdProvider((myCompanyId: currentUserId, otherCompanyId: companyId)),
+    );
+    final viaRequestId = viaRequestIdAsync.value;
+    // Editing an already-submitted rating just needs the SAME connection it
+    // was originally justified by, which it already carries — no need to
+    // re-search for a fresh one before allowing an edit.
+    final canRate = raterCompanyName.isNotEmpty &&
+        (existingRating != null ? true : viaRequestId != null);
+
+    final button = OutlinedButton.icon(
+      onPressed: !canRate
           ? null
           : () => showDialog(
                 context: context,
@@ -552,6 +575,7 @@ class _RateButton extends ConsumerWidget {
                   raterUserId: currentUserId,
                   raterCompanyName: raterCompanyName,
                   existingRating: existingRating,
+                  viaRequestId: existingRating?.viaRequestId ?? viaRequestId ?? '',
                 ),
               ),
       icon: const Icon(Icons.star_outline, size: 16),
@@ -563,6 +587,9 @@ class _RateButton extends ConsumerWidget {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       ),
     );
+
+    if (canRate || raterCompanyName.isEmpty) return button;
+    return Tooltip(message: l.rateNeedsCollaborationTooltip, child: button);
   }
 }
 
@@ -574,6 +601,7 @@ class _RateCompanyDialog extends ConsumerStatefulWidget {
   final String raterUserId;
   final String raterCompanyName;
   final CompanyRatingModel? existingRating;
+  final String viaRequestId;
 
   const _RateCompanyDialog({
     required this.companyId,
@@ -581,6 +609,7 @@ class _RateCompanyDialog extends ConsumerStatefulWidget {
     required this.raterUserId,
     required this.raterCompanyName,
     this.existingRating,
+    required this.viaRequestId,
   });
 
   @override
@@ -623,6 +652,7 @@ class _RateCompanyDialogState extends ConsumerState<_RateCompanyDialog> {
             raterCompanyName: widget.raterCompanyName,
             rating: _selected,
             comment: _commentController.text.trim(),
+            viaRequestId: widget.viaRequestId,
           );
       // myRatingForCompanyProvider is a one-time FutureProvider (not a
       // stream), so it won't pick up this change on its own — invalidate
@@ -689,7 +719,13 @@ class _RateCompanyDialogState extends ConsumerState<_RateCompanyDialog> {
     return Dialog(
       backgroundColor: c.surface,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Padding(
+      // Dialog has no width cap of its own — on a wide viewport it stretched
+      // to fill nearly the whole screen. Every other dialog in the app
+      // (interest_modal.dart's composer, the confirm dialogs) wraps its
+      // content in a ConstrainedBox for exactly this reason.
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -710,7 +746,20 @@ class _RateCompanyDialogState extends ConsumerState<_RateCompanyDialog> {
               controller: _commentController,
               maxLines: 3,
               style: TextStyle(color: c.textPrimary),
-              decoration: InputDecoration(hintText: l.commentOptionalHint),
+              decoration: InputDecoration(
+                hintText: l.commentOptionalHint,
+                hintStyle: TextStyle(color: c.textTertiary),
+                filled: true,
+                fillColor: c.background,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: c.border)),
+                enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: c.border)),
+                focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: AppColors.primary, width: 1.5)),
+              ),
             ),
             if (_error != null) ...[
               const SizedBox(height: 12),
@@ -749,6 +798,7 @@ class _RateCompanyDialogState extends ConsumerState<_RateCompanyDialog> {
               ],
             ),
           ],
+        ),
         ),
       ),
     );

@@ -8,10 +8,26 @@ class Validators {
   static final _phoneAllowedChars = RegExp(r'^[\d\s\-\+\/\(\)]+$');
   static final _postalCodeRegex = RegExp(r'^\d{5}$');
 
+  // Common disposable/temp-mail providers — raises the cost of the
+  // "fifty free throwaway accounts" flood (each still needs a real, checkable
+  // inbox for sendEmailVerification to land in). Not exhaustive — new
+  // disposable services appear constantly — so this is one layer among
+  // several (email verification, per-account post throttle), not a complete
+  // defense on its own.
+  static const _disposableEmailDomains = {
+    'mailinator.com', 'guerrillamail.com', 'guerrillamail.info', '10minutemail.com',
+    'tempmail.com', 'temp-mail.org', 'yopmail.com', 'throwawaymail.com',
+    'trashmail.com', 'getnada.com', 'sharklasers.com', 'dispostable.com',
+    'maildrop.cc', 'fakeinbox.com', 'mintemail.com', 'mailnesia.com',
+    'discard.email', 'moakt.com', 'tempinbox.com', 'emailondeck.com',
+  };
+
   static String? email(String? value, AppLocalizations l, {bool required = true}) {
     final v = value?.trim() ?? '';
     if (v.isEmpty) return required ? l.enterEmail : null;
     if (!_emailRegex.hasMatch(v)) return l.invalidEmailAddr;
+    final domain = v.split('@').last.toLowerCase();
+    if (_disposableEmailDomains.contains(domain)) return l.disposableEmailError;
     return null;
   }
 

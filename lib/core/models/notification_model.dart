@@ -9,7 +9,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class NotificationModel {
   final String id;
   final String recipientId;
-  final String type; // 'new_message' | 'verification_submitted' | 'content_flagged' | 'rating_submitted'
+  final String type; // 'new_message' | 'new_contact_request' | 'verification_submitted' | 'content_flagged' | 'rating_submitted'
   final bool read;
   final DateTime? createdAt;
 
@@ -24,8 +24,16 @@ class NotificationModel {
   final String ratingId; // rating_submitted
   final String capacityId; // content_flagged (capacity)
   final String contentType; // content_flagged only: 'capacity' | 'company'
+  final String requestId; // new_contact_request
+  final bool urgent; // new_contact_request
 
-  bool get isAdminEvent => type != 'new_message';
+  // Both new_message and new_contact_request are addressed to a regular
+  // (non-admin) company and already have their own dedicated, real-time
+  // surfacing — the chat's `unread` map, and the Received-Requests screen's
+  // pending-count sidebar badge, respectively — so both are excluded here
+  // the same way, rather than folding into the admin-events bell dropdown
+  // (which every OTHER type is currently addressed only to admin uids for).
+  bool get isAdminEvent => type != 'new_message' && type != 'new_contact_request';
 
   NotificationModel({
     required this.id,
@@ -39,6 +47,8 @@ class NotificationModel {
     this.ratingId = '',
     this.capacityId = '',
     this.contentType = '',
+    this.requestId = '',
+    this.urgent = false,
   });
 
   factory NotificationModel.fromFirestore(DocumentSnapshot doc) {
@@ -55,6 +65,8 @@ class NotificationModel {
       ratingId: data['ratingId'] ?? '',
       capacityId: data['capacityId'] ?? '',
       contentType: data['contentType'] ?? '',
+      requestId: data['requestId'] ?? '',
+      urgent: data['urgent'] as bool? ?? false,
     );
   }
 }

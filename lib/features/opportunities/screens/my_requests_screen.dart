@@ -41,19 +41,22 @@ class MyRequestsScreen extends ConsumerWidget {
                   if (requests.isEmpty) {
                     return Center(child: Text(l.noRequestsYetText, style: TextStyle(color: c.textTertiary, fontSize: 14)));
                   }
-                  return Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 1200),
-                      child: GridView.builder(
-                        padding: const EdgeInsets.fromLTRB(24, 16, 24, 80),
-                        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                          maxCrossAxisExtent: 300,
-                          mainAxisSpacing: 16,
-                          crossAxisSpacing: 16,
-                          mainAxisExtent: 185,
+                  // Was a GridView of small square tiles — the one visible
+                  // difference left between this page and Erhaltene Anfragen
+                  // after they'd already been brought onto the same card
+                  // shell (border/radius/hover). Now a list, same width cap
+                  // and per-item centering as received_requests_screen.dart.
+                  return ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(0, 16, 0, 80),
+                    itemCount: requests.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 12),
+                    itemBuilder: (_, i) => Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 920),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 24),
+                          child: _MyRequestTile(request: requests[i]),
                         ),
-                        itemCount: requests.length,
-                        itemBuilder: (_, i) => _MyRequestTile(request: requests[i]),
                       ),
                     ),
                   );
@@ -156,9 +159,8 @@ class _MyRequestTileState extends ConsumerState<_MyRequestTile> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(height: 4, color: color),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
+                Padding(
+                    padding: const EdgeInsets.all(14),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -193,7 +195,7 @@ class _MyRequestTileState extends ConsumerState<_MyRequestTile> {
                               style: TextStyle(
                                   color: c.textSecondary, fontSize: 11.5, height: 1.35, fontStyle: FontStyle.italic)),
                         ],
-                        const Spacer(),
+                        const SizedBox(height: 12),
                         // Bottom action: outcome result > follow-up > chat.
                         if (r.outcome != null)
                           Text(
@@ -235,7 +237,6 @@ class _MyRequestTileState extends ConsumerState<_MyRequestTile> {
                       ],
                     ),
                   ),
-                ),
               ],
             ),
           ),

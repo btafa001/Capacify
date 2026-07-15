@@ -8,15 +8,21 @@ import '../../core/localization/app_localizations.dart';
 /// Opens the "invite a company" dialog — the founder's / a member's zero-cost
 /// growth lever. Shares a prefilled German/English invitation to the public app
 /// URL via clipboard, e-mail (mailto) or WhatsApp. No private data, no backend.
-Future<void> showInviteDialog(BuildContext context) {
+///
+/// [companyId], when given, is appended as ?ref={companyId} so a signup via
+/// this link is attributable back to the inviter (see AuthService's
+/// _referrerFromUrl and CompanyModel.referredBy) — shown back to the inviter
+/// as an "Empfehlungen: Nx" count in Settings.
+Future<void> showInviteDialog(BuildContext context, {String? companyId}) {
   return showDialog(
     context: context,
-    builder: (_) => const InviteDialog(),
+    builder: (_) => InviteDialog(companyId: companyId),
   );
 }
 
 class InviteDialog extends StatelessWidget {
-  const InviteDialog({super.key});
+  final String? companyId;
+  const InviteDialog({super.key, this.companyId});
 
   Future<void> _launch(Uri uri) async {
     if (await canLaunchUrl(uri)) {
@@ -28,7 +34,12 @@ class InviteDialog extends StatelessWidget {
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     final c = AppColors.of(context);
-    final message = l.inviteMessage;
+    final message = (companyId == null || companyId!.isEmpty)
+        ? l.inviteMessage
+        : l.inviteMessage.replaceFirst(
+            'https://capacify.de',
+            'https://capacify.de/?ref=$companyId',
+          );
 
     return Dialog(
       backgroundColor: c.surface,

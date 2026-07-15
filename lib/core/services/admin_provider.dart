@@ -8,14 +8,17 @@ import '../models/capacity_model.dart';
 
 final adminServiceProvider = Provider<AdminService>((ref) => AdminService());
 
-final isAdminProvider = FutureProvider.autoDispose<bool>((ref) async {
+// A live listener, not a one-time get(): isAdmin can be granted while the
+// user is already signed in, and a one-shot read would only pick that up
+// on the next sign-in (only authStateProvider changing re-triggers it).
+final isAdminProvider = StreamProvider.autoDispose<bool>((ref) {
   final user = ref.watch(authStateProvider).valueOrNull;
-  if (user == null) return false;
-  final doc = await FirebaseFirestore.instance
+  if (user == null) return Stream.value(false);
+  return FirebaseFirestore.instance
       .collection('users')
       .doc(user.uid)
-      .get();
-  return doc.data()?['isAdmin'] as bool? ?? false;
+      .snapshots()
+      .map((doc) => doc.data()?['isAdmin'] as bool? ?? false);
 });
 
 final pendingCompaniesProvider = StreamProvider<List<CompanyModel>>((ref) {

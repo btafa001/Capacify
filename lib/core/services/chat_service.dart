@@ -48,8 +48,20 @@ class ChatService {
         .map((s) => s.docs.map(ChatMessageModel.fromFirestore).toList());
   }
 
+  // UTC 'YYYY-MM-DD' — matches the server request.time used by the throttle
+  // rule (same helper as CapacityService._todayStr).
+  String _todayStr() {
+    final n = DateTime.now().toUtc();
+    final mm = n.month.toString().padLeft(2, '0');
+    final dd = n.day.toString().padLeft(2, '0');
+    return '${n.year}-$mm-$dd';
+  }
+
   /// Sends a message and, in one batch, updates the thread preview + bumps the
-  /// recipient's unread counter + clears the sender's typing flag.
+  /// recipient's unread counter + clears the sender's typing flag + bumps the
+  /// sender's daily message counter (previously uncapped — see
+  /// messageCounts in firestore.rules; exceeding it fails the whole batch,
+  /// same atomic-throttle pattern as CapacityService.createCapacity).
   /// `participants` is denormalized onto the message so reads stay a cheap
   /// membership check.
   Future<void> sendMessage({
@@ -62,6 +74,13 @@ class ChatService {
     if (trimmed.isEmpty) return;
     final otherId =
         participants.firstWhere((p) => p != senderId, orElse: () => '');
+
+    final today = _todayStr();
+    final countRef = _fs.collection('messageCounts').doc(senderId);
+    final countSnap = await countRef.get();
+    final sameDay = countSnap.exists && countSnap.data()?['day'] == today;
+    final newCount = sameDay ? ((countSnap.data()?['count'] ?? 0) as int) + 1 : 1;
+
     final batch = _fs.batch();
     final msgRef = _chats.doc(chatId).collection('messages').doc();
     batch.set(msgRef, {
@@ -77,6 +96,7 @@ class ChatService {
       if (otherId.isNotEmpty) 'unread.$otherId': FieldValue.increment(1),
       'typing.$senderId': FieldValue.delete(),
     });
+    batch.set(countRef, {'day': today, 'count': newCount});
     await batch.commit();
   }
 

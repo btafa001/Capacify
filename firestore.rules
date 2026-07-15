@@ -15,6 +15,29 @@ service cloud.firestore {
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
     }
 
+    // True if `reqId` names a GRANTED contact_request that actually connects
+    // companyA and companyB (in either direction: one is the requester, the
+    // other is the post's owner via the locked capacityOwners sidecar). Used
+    // to gate a rating on a real collaboration rather than any two accounts —
+    // previously submitRating() had no check anywhere that rater and rated
+    // had ever interacted, so any account could rate any other. Mirrors the
+    // exists()-before-get() chaining used throughout this file (e.g. the
+    // contact_requests/chats rules below) so a bogus/missing reqId fails
+    // closed instead of erroring the whole rule; repeated identical get()
+    // calls are cached within one rule evaluation, so this costs no more
+    // reads than writing it with intermediate variables would.
+    function isGrantedConnectionBetween(reqId, companyA, companyB) {
+      return exists(/databases/$(database)/documents/contact_requests/$(reqId))
+        && get(/databases/$(database)/documents/contact_requests/$(reqId)).data.status == 'granted'
+        && exists(/databases/$(database)/documents/capacityOwners/$(get(/databases/$(database)/documents/contact_requests/$(reqId)).data.postId))
+        && (
+             ( get(/databases/$(database)/documents/contact_requests/$(reqId)).data.requesterCompanyId == companyA
+               && get(/databases/$(database)/documents/capacityOwners/$(get(/databases/$(database)/documents/contact_requests/$(reqId)).data.postId)).data.posterCompanyId == companyB )
+          || ( get(/databases/$(database)/documents/contact_requests/$(reqId)).data.requesterCompanyId == companyB
+               && get(/databases/$(database)/documents/capacityOwners/$(get(/databases/$(database)/documents/contact_requests/$(reqId)).data.postId)).data.posterCompanyId == companyA )
+        );
+    }
+
     // Zero-padded 'YYYY-MM-DD' for the server's request time (UTC) — used by the
     // post-throttle counter so a client can't fake the day to reset its quota.
     function todayStr() {
@@ -32,18 +55,29 @@ service cloud.firestore {
     // 'plan' may only be absent or 'free' at creation. This is what keeps the
     // dormant paid tier from being self-activated to bypass the contact gate.
     match /users/{uid} {
-      allow read: if isSignedIn() && request.auth.uid == uid;
+      // isAdmin() also grants read — an admin managing accounts (promoting
+      // another admin, investigating a report) needs to see OTHER users'
+      // docs, not just their own.
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
       allow create: if isSignedIn() && request.auth.uid == uid &&
         (!('isAdmin' in request.resource.data) || request.resource.data.isAdmin == false) &&
         (!('plan' in request.resource.data) || request.resource.data.plan == 'free');
+      // Admin may update ANY user doc without restriction (e.g. promote/
+      // demote another admin, adjust plan). Safe from self-escalation:
+      // isAdmin() reads the CALLER's own *already-persisted* flag, so a
+      // non-admin can never satisfy this branch to grant themselves admin —
+      // only an account that is already isAdmin:true can use it. A non-admin
+      // still falls through to the self-only branch below, which (unchanged)
+      // still blocks them from touching their own isAdmin/plan fields.
       // .get(key, default) guards against docs written before 'plan' existed
       // (kEarlyAccessMode never writes it) — a bare .plan on such a doc
       // errors the whole expression and silently denies the update, which is
       // exactly what was blocking notifyByEmail/notifyOnNewMessage merges.
-      allow update: if isSignedIn() && request.auth.uid == uid &&
-        request.resource.data.get('isAdmin', false) == resource.data.get('isAdmin', false) &&
-        request.resource.data.get('plan', 'free') == resource.data.get('plan', 'free');
-      allow delete: if isSignedIn() && request.auth.uid == uid;
+      allow update: if isAdmin()
+        || (isSignedIn() && request.auth.uid == uid &&
+            request.resource.data.get('isAdmin', false) == resource.data.get('isAdmin', false) &&
+            request.resource.data.get('plan', 'free') == resource.data.get('plan', 'free'));
+      allow delete: if isAdmin() || (isSignedIn() && request.auth.uid == uid);
     }
 
     // ─── COMPANIES ───
@@ -72,16 +106,34 @@ service cloud.firestore {
     // profile update must therefore leave both fields exactly as they were —
     // a normal profile save (toFirestoreForUpdate) never touches them, so
     // this pin is transparent to the app and only blocks tampering.
+    //
+    // suspended/suspensionReason are the admin "pause a company" moderation
+    // consequence (AdminService.suspendCompany/unsuspendCompany) — same
+    // admin-only shape as verificationStatus: a self-write could otherwise
+    // un-suspend itself right back out of the consequence. .get(key, default)
+    // is used (rather than a bare field reference) since these two fields are
+    // absent on every company doc that predates this feature.
     match /companies/{companyId} {
       allow read: if true;
+      // verificationStatus must start at 'none' — 'pending' is reachable ONLY
+      // via the verifyMyCompany Cloud Function, after a real VIES check has
+      // actually run (Admin SDK write, bypasses rules). Previously a client
+      // could self-set 'pending' straight at registration by typing any
+      // non-empty string into the VAT field — a real, visible "Verifizierung
+      // ausstehend" trust badge for zero verification. Closed here rather
+      // than trusted to the client, which no longer even tries (see
+      // company_profile_screen.dart).
       allow create: if isSignedIn() && request.auth.uid == companyId
-        && request.resource.data.verificationStatus in ['none', 'pending']
-        && request.resource.data.contentFlagged == false;
+        && request.resource.data.verificationStatus == 'none'
+        && request.resource.data.contentFlagged == false
+        && request.resource.data.get('suspended', false) == false;
       allow update: if isAdmin()
         || (isSignedIn() && request.auth.uid == companyId
             && request.resource.data.verificationStatus == resource.data.verificationStatus
             && request.resource.data.ratingSum == resource.data.ratingSum
             && request.resource.data.ratingCount == resource.data.ratingCount
+            && request.resource.data.get('suspended', false) == resource.data.get('suspended', false)
+            && request.resource.data.get('suspensionReason', '') == resource.data.get('suspensionReason', '')
             && (request.resource.data.contentFlagged == resource.data.contentFlagged
                 || (request.resource.data.contentFlagged == true && resource.data.contentFlagged == false)));
       allow delete: if false;
@@ -95,19 +147,62 @@ service cloud.firestore {
     // on a non-admin write. Any signed-in visitor can bump exactly one
     // engagement counter; viewCount also works signed-out.
     //
-    // create is just "signed in" — the paired capacityOwners doc (written in
-    // the same batch) is what binds the post to its real owner; rules can't
-    // cross-validate batch siblings (get() sees pre-batch state), and an
-    // orphan anonymous post with no owner is contactless and harmless.
+    // create is just "signed in" + a verified email — the paired
+    // capacityOwners doc (written in the same batch) is what binds the post
+    // to its real owner; rules can't cross-validate batch siblings (get()
+    // sees pre-batch state), and an orphan anonymous post with no owner is
+    // contactless and harmless. email_verified is a standard claim on every
+    // Firebase Auth ID token (true automatically for Google/Apple sign-in;
+    // only email/password accounts start false) — gating on it here, not just
+    // in the client, is what actually raises the cost of a throwaway account.
+    // A suspended company (admin moderation consequence — see companies/
+    // {companyId} above) may not create a post at all, anonymous or not,
+    // since visibilityMode:'anonymous' posts carry no identity to filter by
+    // later — this is the only point a suspension can actually block a new
+    // post from reaching the feed.
     match /capacities/{capacityId} {
       allow read: if true;
-      allow create: if isSignedIn();
+      // visibilityMode is chosen once at creation and never revisited (see
+      // CapacityModel — the field is excluded from toFirestoreForUpdate).
+      // 'anonymous' (or the field being ABSENT, which is how every client
+      // release before this one writes a post — deliberately tolerated so
+      // this rule deploys safely ahead of the client that starts sending the
+      // field, matching CapacityModel.fromFirestore's own missing-field
+      // default) must carry NO identity fields at all. 'visible'/'discreet'
+      // must carry the CALLER's own identity, cross-checked against their
+      // own already-public companies/{uid} doc (cheap — see the identical
+      // get() pattern in isGrantedConnectionBetween above) so nobody can
+      // post identity claiming to be a different company.
+      allow create: if isSignedIn() && request.auth.token.email_verified == true
+        // Fails open if the caller has no company doc yet (matches the
+        // pre-existing anonymous-post path, which never required one) —
+        // exists() guards the get() so a missing doc can't throw and deny
+        // the whole rule, same pattern as contact_requests/capacityOwners.
+        && ( !exists(/databases/$(database)/documents/companies/$(request.auth.uid))
+             || get(/databases/$(database)/documents/companies/$(request.auth.uid)).data.get('suspended', false) == false )
+        && (
+             ( (!('visibilityMode' in request.resource.data) || request.resource.data.visibilityMode == 'anonymous')
+               && !('posterCompanyId' in request.resource.data)
+               && !('posterCompanyName' in request.resource.data) )
+          || ( ('visibilityMode' in request.resource.data)
+               && request.resource.data.visibilityMode in ['visible', 'discreet']
+               && request.resource.data.posterCompanyId == request.auth.uid
+               && request.resource.data.posterCompanyName ==
+                    get(/databases/$(database)/documents/companies/$(request.auth.uid)).data.name
+               && ( !('posterLogoUrl' in request.resource.data)
+                    || request.resource.data.posterLogoUrl ==
+                         get(/databases/$(database)/documents/companies/$(request.auth.uid)).data.logoUrl ) )
+           );
+      // The owner-update branch pins posterSuspended (like contentFlagged)
+      // admin-only — otherwise a suspended company could silently un-hide
+      // its own existing posts by editing them, defeating the consequence.
       allow update: if isAdmin()
         || (isSignedIn()
             && exists(/databases/$(database)/documents/capacityOwners/$(capacityId))
             && get(/databases/$(database)/documents/capacityOwners/$(capacityId)).data.posterCompanyId == request.auth.uid
             && (request.resource.data.contentFlagged == resource.data.contentFlagged
-                || (request.resource.data.contentFlagged == true && resource.data.contentFlagged == false)))
+                || (request.resource.data.contentFlagged == true && resource.data.contentFlagged == false))
+            && request.resource.data.get('posterSuspended', false) == resource.data.get('posterSuspended', false))
         || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount'])
         || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['favoriteCount']))
         || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['interestCount']));
@@ -173,13 +268,17 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // ─── CONTACT REQUESTS (credit-based Vermittlung) ───
+    // ─── CONTACT REQUESTS (free, message-first) ───
     // Deterministic id: {requesterCompanyId}_{postId}. Read by the requester,
     // an admin, OR the poster of the referenced post (via the locked sidecar).
-    // A VERIFIED requester unlocks instantly: the only way to create a 'granted'
-    // request is to spend a credit in the SAME batch — enforced with getAfter on
-    // the wallet, so a client can never self-grant a free reveal. An UNVERIFIED
-    // requester can only create 'pending_review' (founder screens + grants).
+    // Create is either 'pending' (anonymous-mode posts — the poster then
+    // Accepts/Declines, see the update rule below) or already 'granted' at
+    // creation (visible/discreet-mode posts — instant reveal, no accept step;
+    // see the second branch of allow create below). The granted branch trusts
+    // only the referenced POST's own stored visibilityMode/posterCompanyId,
+    // never anything the client claims about itself on the request — so an
+    // anonymous post (which never carries a posterCompanyId) can never be
+    // tricked into auto-granting.
     match /contact_requests/{reqId} {
       // The deterministic id is {requesterCompanyId}_{postId}. The requester's
       // own flow does a get() on this id to see whether they've already sent a
@@ -199,13 +298,37 @@ service cloud.firestore {
              || ( exists(/databases/$(database)/documents/capacityOwners/$(resource.data.postId))
                && get(/databases/$(database)/documents/capacityOwners/$(resource.data.postId)).data.posterCompanyId == request.auth.uid ) ) )
       );
-      // FREE, message-first (launch phase): anyone signed in may send a first
-      // message, always created as 'pending' (no credit, no payment). The
-      // poster then accepts/declines it (see update below).
+      // FREE, message-first (launch phase): anyone signed in with a verified
+      // email may send a first message, always created as 'pending' (no
+      // credit, no payment). The poster then accepts/declines it (see update
+      // below). email_verified gating here (not just posting) is what closes
+      // the "send from fifty throwaway accounts" path email verification is
+      // meant to raise the cost of.
+      //
+      // The last two conditions REJECT a message containing an email address
+      // or a 7+ digit run (phone number) outright — unlike capacities/
+      // companies (public feed items, where "hide from the feed" is
+      // meaningful enforcement), a contact_request's message has no public
+      // feed to hide from: the poster's inbox renders it directly, so
+      // flagging it after the fact can't undo an already-rendered leak. This
+      // is a coarse backstop (no word-boundary regex support relied on here),
+      // not a replacement for the client's own live warning
+      // (content_moderation.dart) — it exists for the direct-API-write case
+      // that warning can't reach.
       allow create: if isSignedIn()
+        && request.auth.token.email_verified == true
         && request.resource.data.requesterCompanyId == request.auth.uid
         && request.resource.data.outcome == null
-        && request.resource.data.status == 'pending';
+        && !request.resource.data.message.matches('.*[\\w.+-]+@[\\w-]+\\.[a-zA-Z]{2,}.*')
+        && !request.resource.data.message.matches('.*[0-9]{7,}.*')
+        && (
+             request.resource.data.status == 'pending'
+          || ( request.resource.data.status == 'granted'
+               && exists(/databases/$(database)/documents/capacities/$(request.resource.data.postId))
+               && get(/databases/$(database)/documents/capacities/$(request.resource.data.postId)).data.visibilityMode in ['visible', 'discreet']
+               && request.resource.data.posterCompanyId ==
+                    get(/databases/$(database)/documents/capacities/$(request.resource.data.postId)).data.posterCompanyId )
+           );
       allow update: if isAdmin()
         // Requester: record the follow-up outcome on their own request.
         || (isSignedIn() && resource.data.requesterCompanyId == request.auth.uid
@@ -226,17 +349,29 @@ service cloud.firestore {
         // together" flag (only their own key, only false→true). When both are
         // set, the onCollabConfirmed function counts the completed collaboration
         // for both firms — mutual, so neither side can inflate its own count.
+        // May optionally include actualCrewSize/actualDurationDays in the SAME
+        // write (CapacityOS outcome data — either confirmer may set these,
+        // first write wins, no reconciliation attempted between two reports).
         || ( isSignedIn()
              && resource.data.status == 'granted'
              && resource.data.requesterCompanyId == request.auth.uid
-             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['collabRequester'])
+             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['collabRequester', 'actualCrewSize', 'actualDurationDays'])
              && request.resource.data.collabRequester == true )
         || ( isSignedIn()
              && resource.data.status == 'granted'
              && exists(/databases/$(database)/documents/capacityOwners/$(resource.data.postId))
              && get(/databases/$(database)/documents/capacityOwners/$(resource.data.postId)).data.posterCompanyId == request.auth.uid
-             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['collabPoster'])
-             && request.resource.data.collabPoster == true );
+             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['collabPoster', 'actualCrewSize', 'actualDurationDays'])
+             && request.resource.data.collabPoster == true )
+        // Poster marking a granted request "seen" (my_capacities_screen.dart's
+        // re-engagement badge) — false→true only, same shape as the
+        // collabPoster branch above.
+        || ( isSignedIn()
+             && resource.data.status == 'granted'
+             && exists(/databases/$(database)/documents/capacityOwners/$(resource.data.postId))
+             && get(/databases/$(database)/documents/capacityOwners/$(resource.data.postId)).data.posterCompanyId == request.auth.uid
+             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seenByPoster'])
+             && request.resource.data.seenByPoster == true );
       allow delete: if false;
     }
 
@@ -283,7 +418,19 @@ service cloud.firestore {
         // participants filter, so a resource.data-based rule makes Firestore
         // reject the whole read ("not allowed") even though single-doc creates
         // succeed. The get() is resource-independent, so the list passes.
+        //
+        // exists() guards the get() above it — same pattern used throughout
+        // this file (see contact_requests/capacityOwners/companyRatings).
+        // Without it, watching this subcollection before the parent chat doc
+        // has actually been created (ensureChat() is async; a client can start
+        // watching messages before that write lands, especially on the
+        // RECIPIENT's first-ever open of a brand-new chat) makes `.data` on a
+        // nonexistent get() throw, denying the WHOLE listener rather than
+        // just returning an empty result — which showed up as one side of a
+        // first-time contact being unable to open the chat at all while the
+        // (separately-delivered) push notification still arrived fine.
         allow read: if isSignedIn()
+          && exists(/databases/$(database)/documents/chats/$(chatId))
           && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
         // senderId must be self; the message's audience must be the SAME SET as
         // the parent chat's participants (so it can't be planted with a forged
@@ -341,11 +488,22 @@ service cloud.firestore {
         || (resource.data.status == 'approved')
         || (isSignedIn() && resource.data.raterUserId == request.auth.uid)
         || isAdmin();
+      // create/update: beyond the pre-existing self-only + pending-only
+      // checks, the rater must name a GRANTED contact_request (viaRequestId)
+      // that actually connects them to the company being rated. This is the
+      // authoritative check — CompanyService.findGrantedRequestId() on the
+      // client only decides what the UI *offers*; a direct API write still
+      // has to satisfy isGrantedConnectionBetween() here.
       allow create, update: if isAdmin()
         || (isSignedIn()
             && request.resource.data.raterUserId == request.auth.uid
             && request.resource.data.raterUserId != request.resource.data.companyId
-            && request.resource.data.status == 'pending');
+            && request.resource.data.status == 'pending'
+            && 'viaRequestId' in request.resource.data
+            && isGrantedConnectionBetween(
+                 request.resource.data.viaRequestId,
+                 request.auth.uid,
+                 request.resource.data.companyId));
       allow delete: if isAdmin() || (isSignedIn() && resource.data.raterUserId == request.auth.uid);
     }
 
@@ -392,6 +550,74 @@ service cloud.firestore {
                && request.resource.data.count == resource.data.count + 1
                && request.resource.data.count <= 10 )
              // New day: reset to 1.
+          || ( resource.data.day != todayStr()
+               && request.resource.data.count == 1 )
+        );
+      allow delete: if false;
+    }
+
+    // ─── MESSAGE THROTTLE (daily per-account cap) ───
+    // Same shape/pattern as postCounts above, for chat messages. Cap = 200/day
+    // (keep in sync with kMaxMessagesPerDay) — generous for real usage, tight
+    // enough to blunt a scripted flood. ChatService.sendMessage's existing
+    // batch (message + thread preview + unread bump) gains this counter write
+    // in the SAME batch, so exceeding the cap fails the whole send atomically.
+    match /messageCounts/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow create: if isSignedIn() && request.auth.uid == uid
+        && request.resource.data.day == todayStr()
+        && request.resource.data.count == 1;
+      allow update: if isSignedIn() && request.auth.uid == uid
+        && request.resource.data.day == todayStr()
+        && (
+             ( resource.data.day == todayStr()
+               && request.resource.data.count == resource.data.count + 1
+               && request.resource.data.count <= 200 )
+          || ( resource.data.day != todayStr()
+               && request.resource.data.count == 1 )
+        );
+      allow delete: if false;
+    }
+
+    // ─── RATING THROTTLE (daily per-account cap) ───
+    // Same pattern, for companyRatings creates. Cap = 20/day (keep in sync
+    // with kMaxRatingsPerDay) — a real company rating 20 different partners
+    // in one day is already generous; a script trying to rate its way through
+    // many sock-puppet-manufactured "collaborations" (Part 17.1 of the audit)
+    // hits this fast. CompanyService.submitRating gains a same-batch counter
+    // write (see below) — only on CREATE (a first rating for that company),
+    // since editing an existing rating doesn't create a new document.
+    match /ratingCounts/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow create: if isSignedIn() && request.auth.uid == uid
+        && request.resource.data.day == todayStr()
+        && request.resource.data.count == 1;
+      allow update: if isSignedIn() && request.auth.uid == uid
+        && request.resource.data.day == todayStr()
+        && (
+             ( resource.data.day == todayStr()
+               && request.resource.data.count == resource.data.count + 1
+               && request.resource.data.count <= 20 )
+          || ( resource.data.day != todayStr()
+               && request.resource.data.count == 1 )
+        );
+      allow delete: if false;
+    }
+
+    // ─── REPORT THROTTLE (daily per-account cap) ───
+    // Same pattern, for reports. Cap = 10/day (keep in sync with
+    // kMaxReportsPerDay).
+    match /reportCounts/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow create: if isSignedIn() && request.auth.uid == uid
+        && request.resource.data.day == todayStr()
+        && request.resource.data.count == 1;
+      allow update: if isSignedIn() && request.auth.uid == uid
+        && request.resource.data.day == todayStr()
+        && (
+             ( resource.data.day == todayStr()
+               && request.resource.data.count == resource.data.count + 1
+               && request.resource.data.count <= 10 )
           || ( resource.data.day != todayStr()
                && request.resource.data.count == 1 )
         );

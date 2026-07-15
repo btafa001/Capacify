@@ -34,6 +34,8 @@ class AppLocalizations {
   String get signOut         => _t('Abmelden', 'Sign out');
   String get expired         => _t('Abgelaufen', 'Expired');
   String get persons         => _t('Personen', 'persons');
+  // Post-creation flow: leads with team framing rather than a raw headcount.
+  String get teamSizeLabel   => _t('Teamgröße', 'Team size');
   String get callTooltip     => _t('Anrufen', 'Call');
   // Perishability + freshness (feed card).
   String daysLeftLabel(int n) => n <= 1
@@ -65,6 +67,9 @@ class AppLocalizations {
   // Landing proof-of-life ticker (real counts).
   String pulseActiveCapacities(int n) => _t('$n Kapazitäten aktiv', '$n active capacities');
   String pulseCompanies(int n) => _t('$n Firmen dabei', '$n companies onboard');
+  String foundingMemberPulseLabel(int floor) => _t(
+      'Gründungsmitglieder gesucht — sei einer der ersten $floor Hamburger Betriebe',
+      'Founding members wanted — be one of the first $floor Hamburg firms');
   // Saved searches + profile-match relevance.
   String get saveSearchLabel     => _t('Speichern', 'Save');
   String get searchSavedSnackbar => _t('Suche gespeichert', 'Search saved');
@@ -88,6 +93,12 @@ class AppLocalizations {
   String get collabWaitingPartner  => _t('Von Ihnen bestätigt – warten auf den Partner', 'Confirmed by you — waiting for the partner');
   String get collabConfirmedBoth   => _t('Zusammenarbeit bestätigt', 'Collaboration confirmed');
   String get collabConfirmSnackbar => _t('Danke! Ihre Bestätigung wurde gespeichert.', 'Thanks — your confirmation was saved.');
+  String get collabOutcomeDialogTitle => _t('Wie ist es gelaufen?', 'How did it go?');
+  String get collabOutcomeDialogBody => _t(
+      'Optional — hilft uns, passende Kapazitäten künftig noch besser zu vermitteln.',
+      'Optional — helps us match capacity even better in future.');
+  String get collabActualCrewSizeLabel => _t('Tatsächliche Anzahl Personen', 'Actual number of people');
+  String get collabActualDurationLabel => _t('Dauer in Tagen (optional)', 'Duration in days (optional)');
   String collabCountLabel(int n)   => n == 1 ? _t('1 Zusammenarbeit', '1 collaboration') : _t('$n Zusammenarbeiten', '$n collaborations');
   String collabRepeatLabel(int n)  => _t('$n mit Wiederkehr', '$n repeat');
   // In-app notification center (bell).
@@ -147,6 +158,17 @@ class AppLocalizations {
       'Bevor Sie eine Kapazität veröffentlichen, vervollständigen Sie bitte Ihr Firmenprofil (Telefon, Adresse, Gewerke und eine kurze Beschreibung). So bleibt der Marktplatz vertrauenswürdig – auch wenn Ihre Anzeige anonym erscheint.',
       'Before posting a capacity, please complete your company profile (phone, address, trades and a short description). This keeps the marketplace trustworthy — even though your post stays anonymous.');
   String get completeProfileToPostCta => _t('Zum Profil', 'Go to profile');
+  // Specific "which field(s) exactly" messaging — replaces the generic
+  // completeProfileToPostBody/completeProfileToRequestNotice at the actual
+  // post/contact gate call sites, so a company isn't left guessing what's
+  // still missing (see CompanyModel.missingCompletenessFieldsLabel).
+  String completeProfileMissingFieldsBody(String fields) => _t(
+      'Bevor Sie veröffentlichen oder kontaktieren können, ergänzen Sie bitte: $fields.',
+      'Before you can post or contact, please add: $fields.');
+  String get missingFieldDescription   => _t('Beschreibung', 'Description');
+  String get missingFieldPhoneCompany  => _t('Telefonnummer', 'Phone number');
+  String get missingFieldAddress       => _t('Adresse', 'Address');
+  String get missingFieldTrades        => _t('Gewerk', 'Trade');
   String get days            => _t('Tage', 'days');
   String get active          => _t('aktiv', 'active');
 
@@ -158,6 +180,10 @@ class AppLocalizations {
 
   // ── Hero ────────────────────────────────────────────────────────────────────
   String get heroLiveBadge   => _t('Neue Kapazitäten · live aktualisiert', 'New capacity posts · updated live');
+  // Eyebrow label inside the hero's card-grid chrome frame — frames the 4
+  // example cards as "a live look at the marketplace" rather than a floating
+  // mockup. Deliberately no numbers here (see _MarketPulseRow's comment).
+  String get heroFrameLabel  => _t('KAPAZITÄTS-MARKTPLATZ', 'CAPACITY MARKETPLACE');
   String get heroTitle       => _t('Wer ist heute\n', 'Who is available\n');
   String get heroHighlight   => _t('verfügbar', 'today');
   String get heroSubtitle    => _t(
@@ -187,27 +213,30 @@ class AppLocalizations {
   // ── How it works ─────────────────────────────────────────────────────────────
   String get howTitle    => _t('Wie es funktioniert',                    'How it works');
   String get howSubtitle => _t('In drei Schritten zur ersten Verbindung.', 'Three steps to your first connection.');
-  String get step1Title  => _t('Anonym entdecken',                       'Discover anonymously');
-  String get step1Desc   => _t(
-    'Durchsuchen Sie verfügbare Kapazitäten nach Gewerk, Ort und Datum. Anzeigen sind anonym – im Fokus steht die Gelegenheit, nicht die Firma.',
-    'Browse available capacity by trade, location and date. Posts are anonymous — the focus is the opportunity, not the company.',
-  );
+  // Visible is the default visibility mode (see CapacityVisibilityMode) —
+  // "anonymously" overstated what browsing actually looks like for most
+  // posts, which show identity directly. Anonymous mode is now surfaced
+  // separately, as an opt-in choice, in the Unlock Showcase section below.
+  String get step1Title  => _t('Kapazitäten entdecken',                   'Discover capacity');
+  // Shortened to a scannable phrase, not a full sentence — matches the
+  // punchier voice used elsewhere on the page (badges, CTAs).
+  String get step1Desc   => _t('Filtern nach Gewerk, Ort und Datum.', 'Filter by trade, location and date.');
   String get step2Title  => _t('Nachricht senden',                       'Send a message');
-  String get step2Desc   => _t(
-    'Senden Sie dem anonymen Anbieter eine kostenlose erste Nachricht – ohne Kredite, ohne Bezahlung.',
-    'Send the anonymous poster a free first message — no credits, no payment.',
-  );
+  String get step2Desc   => _t('Kostenlos – ohne Kredite, ohne Bezahlung.', 'Free — no credits, no payment.');
   String get step3Title  => _t('Verbinden & zusammenarbeiten',           'Connect & collaborate');
+  // Instant-grant (visible/discreet, the default) vs. Accept-gated
+  // (anonymous, opt-in) — see ContactRequestService.requestContact. Only the
+  // latter waits on the poster's click.
   String get step3Desc   => _t(
-    'Nimmt die Firma an, werden Kontakt und Chat freigeschaltet – Sie besprechen die Zusammenarbeit direkt in der App.',
-    'When the company accepts, contact and chat open — you arrange the collaboration right in the app.',
+    'Meist sofort freigeschaltet. Bei anonymen Anzeigen erst nach Bestätigung.',
+    'Usually instant. Anonymous posts need a quick accept first.',
   );
 
-  // ── Landing: anonymous → unlocked showcase ──────────────────────────────────
-  String get unlockShowcaseTitle => _t('Von anonym zu verbunden – mit einer Nachricht', 'From anonymous to connected — with one message');
+  // ── Landing: anonymous mode showcase (opt-in, not the default) ─────────────
+  String get unlockShowcaseTitle => _t('Lieber anonym bleiben? Sie entscheiden.', 'Prefer to stay anonymous? You decide.');
   String get unlockShowcaseSubtitle => _t(
-    'Anzeigen sind anonym. Sie senden eine kostenlose Nachricht – nimmt die Firma an, öffnen sich Kontakt und Chat.',
-    'Posts are anonymous. You send a free message — when the company accepts, contact and chat open.');
+    'Standardmäßig zeigen Ihre Anzeigen Firmenname und Logo. Wählen Sie stattdessen den Anonym-Modus, sehen Interessenten nur die Eckdaten – bis Sie eine Anfrage annehmen.',
+    'By default your posts show your company name and logo. Choose Anonymous mode instead, and interested companies see only the basics — until you accept a request.');
   String get showcaseAnonBadge => _t('FIRMA VERBORGEN', 'COMPANY HIDDEN');
   // "Connected" — the free message-first outcome (was "UNLOCKED", the old paid reveal).
   String get showcaseUnlockedBadge => _t('VERBUNDEN', 'CONNECTED');
@@ -247,7 +276,9 @@ class AppLocalizations {
 
   // ── Trust section ────────────────────────────────────────────────────────────
   String get trustTitle    => _t('Vertrauen & Sicherheit',              'Trust & Safety');
-  String get trustSubtitle => _t('Nur echte, verifizierte Bauunternehmen. Anonyme Anzeigen, geschützter Kontakt.', 'Only real, verified construction companies. Anonymous posts, protected contact.');
+  // Verification is opt-in (VAT check requested from the profile page), not
+  // gated at registration — "nur verifizierte" overstated it as universal.
+  String get trustSubtitle => _t('Geprüfte Firmenprofile, transparente Bewertungen – und die Wahl, ob Sie sichtbar oder anonym posten.', 'Verified company profiles, transparent ratings — and your choice to post visibly or anonymously.');
   String get trust1Title   => _t('Verifiziert',    'Verified');
   String get trust1Desc    => _t('Geprüfte Unternehmensprofile',            'Verified company profiles');
   String get trust2Title   => _t('Bewertet',       'Rated');
@@ -352,6 +383,13 @@ class AppLocalizations {
   String get companyNameHint  => _t('Mustermann GmbH',   'Smith Ltd.');
   String get tradeLabel       => _t('Gewerk *',           'Trade *');
   String get cityLabel        => _t('Stadt *',            'City *');
+  // Required on the COMPANY profile form specifically — phone/address gate
+  // isProfileComplete there, but the shared phoneLabel/addressLabel getters
+  // are also used by admin_onboarding_screen.dart and other non-required
+  // contexts, so those stay untouched and these two are scoped to that one
+  // call site each.
+  String get companyPhoneRequiredLabel   => _t('Telefon *', 'Phone *');
+  String get companyAddressRequiredLabel => _t('Adresse *', 'Address *');
   String get cityHint         => 'Hamburg';
   String get phoneLabel       => _t('Telefon',            'Phone');
   String get phoneHint        => '+49 40 123456';
@@ -395,6 +433,15 @@ class AppLocalizations {
   String get toLogin           => _t('Zur Anmeldung', 'Sign in');
   String get enterEmail        => _t('Bitte E-Mail eingeben',   'Please enter email');
   String get invalidEmailAddr  => _t('Ungültige E-Mail-Adresse', 'Invalid email address');
+  String get disposableEmailError => _t(
+      'Bitte eine dauerhafte geschäftliche E-Mail-Adresse verwenden (keine Wegwerf-Adresse).',
+      'Please use a permanent business email address (no disposable/temp-mail addresses).');
+  String get verifyEmailBannerBody => _t(
+      'Bitte bestätigen Sie Ihre E-Mail-Adresse — erst danach können Sie Kapazitäten posten oder Firmen kontaktieren.',
+      'Please verify your email address — you need to before you can post capacities or contact companies.');
+  String get resendVerificationButton => _t('E-Mail erneut senden', 'Resend email');
+  String get iveVerifiedButton        => _t('Ich habe bestätigt', "I've verified");
+  String get verificationEmailResent  => _t('E-Mail wurde erneut gesendet.', 'Verification email sent again.');
   String get invalidPhoneNumber => _t('Ungültige Telefonnummer', 'Invalid phone number');
   String get invalidPostalCode  => _t('Ungültige Postleitzahl (5 Ziffern)', 'Invalid postal code (5 digits)');
   String get enterPassword     => _t('Bitte Passwort eingeben',  'Please enter password');
@@ -417,7 +464,7 @@ class AppLocalizations {
   // ── Invite / share dialog ──────────────────────────────────────────────────
   String get inviteTitle       => _t('Ein Unternehmen einladen', 'Invite a company');
   String get inviteSubtitle    => _t('Je mehr Betriebe mitmachen, desto mehr Aufträge und Kapazitäten für alle. Teilen Sie Capacify mit Ihrem Netzwerk.', 'The more companies join, the more jobs and capacity for everyone. Share Capacify with your network.');
-  String get inviteMessage     => _t('Ich nutze Capacify — die Live-Kapazitätsbörse für Bauunternehmen in Hamburg. Freie Kapazitäten anbieten oder Partner für Aufträge finden. Kostenlos: https://capacify-mvp.web.app', 'I use Capacify — the live capacity exchange for construction companies in Hamburg. Offer spare capacity or find partners for jobs. Free: https://capacify-mvp.web.app');
+  String get inviteMessage     => _t('Ich nutze Capacify — die Live-Kapazitätsbörse für Bauunternehmen in Hamburg. Freie Kapazitäten anbieten oder Partner für Aufträge finden. Kostenlos: https://capacify.de', 'I use Capacify — the live capacity exchange for construction companies in Hamburg. Offer spare capacity or find partners for jobs. Free: https://capacify.de');
   String get inviteCopyLink    => _t('Einladung kopieren', 'Copy invitation');
   String get inviteCopied      => _t('Einladung in die Zwischenablage kopiert', 'Invitation copied to clipboard');
   String get inviteViaEmail    => _t('Per E-Mail einladen', 'Invite via email');
@@ -708,6 +755,7 @@ class AppLocalizations {
   String get saveErrorRetry      => _t('Fehler beim Speichern. Bitte erneut versuchen.', 'Error saving. Please try again.');
   String get companyProfileTitle    => _t('Unternehmensprofil', 'Company Profile');
   String get companyProfileSubtitle => _t('Präsentieren Sie Ihr Unternehmen auf Capacify', 'Present your company on Capacify');
+  String get logoUploadHint => _t('Tippen, um ein Logo hochzuladen', 'Tap to upload a logo');
   String get basicInfoSection     => _t('Grundinformationen', 'Basic Information');
   String get tradeBranchLabel     => _t('Gewerk / Branche *', 'Trade / Industry *');
   String get descriptionRequiredLabel => _t('Beschreibung *', 'Description *');
@@ -772,8 +820,24 @@ class AppLocalizations {
   String get section1Type         => _t('1. Art der Kapazität', '1. Type of capacity');
   String get weAreAvailable       => _t('Wir sind verfügbar', 'We are available');
   String get weAreSearching       => _t('Wir suchen Kapazität', 'We are looking for capacity');
-  String get section2Trade        => _t('2. Gewerk auswählen', '2. Select trade');
-  String get section3When         => _t('3. Wann verfügbar?', '3. When available?');
+  // Visibility mode — chosen once per post, immutable afterward (see
+  // CapacityModel.visibilityMode). Placed right after Type since it's as
+  // fundamental a choice as offer/need.
+  String get section2Visibility   => _t('2. Sichtbarkeit', '2. Visibility');
+  String get visibilityVisibleLabel => _t('Sichtbar', 'Visible');
+  String get visibilityVisibleSubtitle => _t(
+      'Firmenname, Logo und Verifizierung werden angezeigt. Kontakt bleibt bis zur ersten Nachricht geschützt.',
+      'Your name, logo and verification are shown. Contact details stay protected until the first message.');
+  String get visibilityDiscreetLabel => _t('Diskret', 'Discreet');
+  String get visibilityDiscreetSubtitle => _t(
+      'Firmenname sichtbar, aber zurückhaltender dargestellt — ein ruhigerer Auftritt.',
+      'Your name is shown, but framed more discreetly — a quieter presence.');
+  String get visibilityAnonymousLabel => _t('Anonym', 'Anonymous');
+  String get visibilityAnonymousSubtitle => _t(
+      'Ihre Identität bleibt verborgen, bis Sie eine Anfrage annehmen — ideal, wenn Mitbewerber Ihre freie Kapazität nicht sehen sollen.',
+      "Your identity stays hidden until you accept a request — best if you don't want competitors to see your free capacity.");
+  String get section3Trade        => _t('3. Gewerk auswählen', '3. Select trade');
+  String get section4When         => _t('4. Wann verfügbar?', '4. When available?');
   String get availNowAllCaps      => _t('SOFORT VERFÜGBAR', 'AVAILABLE NOW');
   String get availableFromTodaySubtitle => _t('Ab heute einsetzbar', 'Can start today');
   String get within7DaysSubtitle  => _t('Innerhalb der nächsten 7 Tage', 'Within the next 7 days');
@@ -782,13 +846,30 @@ class AppLocalizations {
   String get chooseDateFromCalendar => _t('Zeitraum aus Kalender wählen', 'Choose date range from calendar');
   String get startDateChip       => _t('Start', 'Start');
   String get endDateChip         => _t('Ende', 'End');
-  String get section4LocationHamburg => _t('4. Standort in Hamburg', '4. Location in Hamburg');
-  String get section5WorkerCount  => _t('5. Anzahl Personen', '5. Number of people');
-  String get section6Description  => _t('6. Beschreibung (optional)', '6. Description (optional)');
+  String get section5LocationHamburg => _t('5. Standort in Hamburg', '5. Location in Hamburg');
+  String get section6WorkerCount  => _t('6. Teamgröße', '6. Team size');
+  String get section7Description  => _t('7. Beschreibung (optional)', '7. Description (optional)');
   String get descriptionExampleHint => _t(
     'z.B. "5 Trockenbauer ab Montag, alle Werkzeuge dabei, Führerschein vorhanden..."',
     'e.g. "5 drywall workers from Monday, all tools included, driver\'s license available..."',
   );
+  String get section8AdditionalDetails => _t('8. Zusätzliche Angaben (optional)', '8. Additional details (optional)');
+  String get skillDetailsLabel => _t('Qualifikationen / Ausrüstung', 'Qualifications / equipment');
+  String get skillDetailsHint => _t(
+    'z.B. "Hubarbeitsbühne-Schein, Führerschein Kl. B"',
+    'e.g. "Aerial platform license, Class B driver\'s license"',
+  );
+  String get dayRateBandLabel => _t('Tagessatz (optional)', 'Day rate (optional)');
+  String get dayRateBandUndisclosed => _t('Nicht angeben', 'Prefer not to say');
+  String dayRateBandName(String band) {
+    switch (band) {
+      case 'unter_300': return _t('unter 300€', 'under €300');
+      case '300_500': return _t('300–500€', '€300–500');
+      case '500_800': return _t('500–800€', '€500–800');
+      case 'ueber_800': return _t('800€+', '€800+');
+      default: return dayRateBandUndisclosed;
+    }
+  }
   String get previewLabel         => _t('Vorschau', 'Preview');
   String get postNowButton        => _t('Jetzt posten', 'Post now');
 
@@ -799,7 +880,7 @@ class AppLocalizations {
   String get endedBadge           => _t('BEENDET', 'ENDED');
   String get titleRequiredLabel   => _t('Titel *', 'Title *');
   String get locationRequiredLabel => _t('Ort *', 'Location *');
-  String get countRequiredLabel   => _t('Anzahl *', 'Count *');
+  String get countRequiredLabel   => _t('Teamgröße *', 'Team size *');
   String get fromDateLabel        => _t('Von *', 'From *');
   String get toDateLabel          => _t('Bis *', 'To *');
   String get statusFieldLabel     => 'Status';
@@ -813,6 +894,9 @@ class AppLocalizations {
   // ── Ratings ───────────────────────────────────────────────────────────────────
   String get rateCompanyButton    => _t('Bewerten', 'Rate');
   String get editRatingButton     => _t('Bewertung bearbeiten', 'Edit rating');
+  String get rateNeedsCollaborationTooltip => _t(
+      'Bewertungen sind erst nach einer angenommenen Kontaktanfrage möglich.',
+      'Rating is only available after an accepted contact request.');
   String rateCompanyDialogTitle(String companyName) => _t('$companyName bewerten', 'Rate $companyName');
   String get yourRatingLabel      => _t('Ihre Bewertung', 'Your rating');
   String get commentOptionalLabel => _t('Kommentar (optional)', 'Comment (optional)');
@@ -822,6 +906,13 @@ class AppLocalizations {
   String get deleteRatingButton   => _t('Bewertung löschen', 'Delete rating');
   String get deleteRatingConfirmTitle => _t('Bewertung löschen?', 'Delete rating?');
   String get deleteRatingConfirmBody => _t('Diese Bewertung wird endgültig entfernt und kann nicht wiederhergestellt werden.', 'This rating will be permanently removed and cannot be restored.');
+  // Only offered once the underlying post is closed/cancelled (see
+  // ChatScreen) — deleteChat (Cloud Function) enforces this server-side too.
+  String get deleteChatAction => _t('Chat löschen', 'Delete chat');
+  String get deleteChatConfirmTitle => _t('Chat löschen?', 'Delete chat?');
+  String get deleteChatConfirmBody => _t(
+      'Dieser Chat wird endgültig entfernt und kann nicht wiederhergestellt werden.',
+      'This chat will be permanently removed and cannot be restored.');
   String get ratingDeletedSnackbar => _t('Bewertung gelöscht', 'Rating deleted');
   String get selectRatingValidation => _t('Bitte wählen Sie eine Bewertung', 'Please select a rating');
   String get reviewsSectionTitle  => _t('Bewertungen', 'Reviews');
@@ -886,6 +977,11 @@ class AppLocalizations {
   String get accountSectionCaps   => _t('KONTO', 'ACCOUNT');
   String get changePasswordTitle  => _t('Passwort ändern', 'Change password');
   String get setNewPasswordSubtitle => _t('Neues Passwort festlegen', 'Set new password');
+  String get referralsTitle => _t('Empfehlungen', 'Referrals');
+  String referralsCountSubtitle(int n) => n == 1
+      ? _t('1 Unternehmen über Ihren Link beigetreten', '1 company joined via your link')
+      : _t('$n Unternehmen über Ihren Link beigetreten', '$n companies joined via your link');
+  String get referralsNoneYetSubtitle => _t('Firma einladen — Ihr persönlicher Link', 'Invite a company — your personal link');
   String get signOutSubtitle      => _t('Vom Konto abmelden', 'Sign out of account');
   String get currentPasswordLabel => _t('Aktuelles Passwort', 'Current password');
   String get newPasswordLabel     => _t('Neues Passwort', 'New password');
@@ -1030,10 +1126,6 @@ class AppLocalizations {
   String get ratingsTab            => _t('BEWERTUNGEN', 'RATINGS');
   String get noPendingRatingsTitle => _t('Keine ausstehenden Bewertungen', 'No pending ratings');
   String get allRatingsReviewedText => _t('Alle Bewertungen sind geprüft.', 'All ratings have been reviewed.');
-  // One-time backfill for ratings whose aggregate was inflated by a deletion
-  // that predates the auto-recompute fix — see recomputeAllRatingAggregates.
-  String get recomputeRatingsButton  => _t('Bewertungen neu berechnen', 'Recalculate ratings');
-  String recomputeRatingsSuccess(int n) => _t('$n Unternehmen aktualisiert.', '$n companies updated.');
   String get confirmApproveRatingTitle => _t('Bewertung freigeben?', 'Approve rating?');
   String get confirmRejectRatingTitle => _t('Bewertung ablehnen?', 'Reject rating?');
   String ratingApprovedBody(String raterName, String ratedName) => _t(
@@ -1064,6 +1156,12 @@ class AppLocalizations {
   String get contentApprovedSnackbar => _t('Inhalt freigegeben ✓', 'Content approved ✓');
   String get flaggedPostingTypeLabel => _t('POSTING', 'POSTING');
   String get flaggedCompanyTypeLabel => _t('UNTERNEHMEN', 'COMPANY');
+  String impersonationFlagNotice(String verifiedName) => _t(
+      '⚠ Name ähnlich zu verifiziertem Unternehmen "$verifiedName" — möglicher Identitätsmissbrauch.',
+      '⚠ Name similar to verified company "$verifiedName" — possible impersonation.');
+  String duplicateVatFlagNotice(String otherCompanyName) => _t(
+      '⚠ Diese USt-IdNr. wird bereits von "$otherCompanyName" verwendet.',
+      '⚠ This VAT number is already used by "$otherCompanyName".');
   String get postingUnderReviewNotice => _t(
     'Ihr Inhalt wird derzeit geprüft und ist noch nicht öffentlich sichtbar.',
     'Your content is currently under review and not yet publicly visible.',
@@ -1084,6 +1182,34 @@ class AppLocalizations {
   String verificationRevokedSnackbar(String name) => _t('Verifizierung für $name entzogen', 'Verification revoked for $name');
   String get pendingBadgeCaps     => _t('AUSSTEHEND', 'PENDING');
   String get revokeVerificationTooltip => _t('Verifizierung entziehen', 'Revoke verification');
+
+  // ── Company suspension (admin moderation consequence) ──────────────────────
+  String get suspendCompanyTooltip => _t('Unternehmen sperren', 'Suspend company');
+  String get suspendCompanyTitle  => _t('Unternehmen sperren?', 'Suspend company?');
+  String suspendCompanyBody(String name) => _t(
+    '"$name" kann keine neuen Anzeigen mehr veröffentlichen, und bestehende Anzeigen werden aus dem Feed entfernt.',
+    '"$name" will no longer be able to publish new posts, and its existing posts will be removed from the feed.',
+  );
+  String get suspendReasonHint    => _t('Grund (wird dem Unternehmen angezeigt)', 'Reason (shown to the company)');
+  String get suspendButton        => _t('Sperren', 'Suspend');
+  String companySuspendedSnackbar(String name) => _t('$name gesperrt', '$name suspended');
+  String get suspendedBadge       => _t('GESPERRT', 'SUSPENDED');
+  String get unsuspendCompanyTooltip => _t('Sperre aufheben', 'Lift suspension');
+  String get unsuspendCompanyTitle => _t('Sperre aufheben?', 'Lift suspension?');
+  String unsuspendCompanyBody(String name) => _t(
+    '"$name" kann wieder Anzeigen veröffentlichen; bestehende Anzeigen erscheinen wieder im Feed.',
+    '"$name" will be able to publish posts again; its existing posts will reappear in the feed.',
+  );
+  String get unsuspendButton      => _t('Sperre aufheben', 'Lift suspension');
+  String companyUnsuspendedSnackbar(String name) => _t('Sperre für $name aufgehoben', 'Suspension lifted for $name');
+  String accountSuspendedPostBlocked(String reason) => _t(
+    reason.isEmpty
+        ? 'Ihr Unternehmen ist derzeit gesperrt und kann keine Anzeigen veröffentlichen.'
+        : 'Ihr Unternehmen ist derzeit gesperrt und kann keine Anzeigen veröffentlichen. Grund: $reason',
+    reason.isEmpty
+        ? 'Your company is currently suspended and can\'t publish posts.'
+        : 'Your company is currently suspended and can\'t publish posts. Reason: $reason',
+  );
 
   // ── Forgot password ───────────────────────────────────────────────────────────
   String get emailSentTitle       => _t('E-Mail gesendet', 'Email sent');
@@ -1152,8 +1278,9 @@ class AppLocalizations {
   String get outcomeMatchedLabel  => _t('Ja, vermittelt', 'Yes, matched');
   String get outcomeNoDealLabel   => _t('Kein Deal', 'No deal');
   String get thanksForFeedbackSnackbar => _t('Danke für dein Feedback', 'Thanks for your feedback');
-  // Requester "Meine Anfragen"
-  String get myRequestsTitle      => _t('Meine Anfragen', 'My requests');
+  // Requester "Gesendete Anfragen" — matches navAnfragen exactly so the
+  // sidebar label and this page's own title never disagree.
+  String get myRequestsTitle      => _t('Gesendete Anfragen', 'Sent requests');
   String get noRequestsYetText    => _t('Noch keine Anfragen', 'No requests yet');
   String requestStatusLabel(String status) {
     switch (status) {
@@ -1213,8 +1340,12 @@ class AppLocalizations {
   String get interestMessageHint  => _t('Kurz zum Projekt – ohne Kontaktdaten', 'Briefly about the project – no contact details');
   String get interestSendConfirm  => _t('Anfrage senden', 'Send request');
   String get interestContainsContactWarning => _t(
-      'Bitte keine Telefonnummern oder E-Mail-Adressen – der Kontakt wird nach der Vermittlung automatisch freigegeben.',
-      'Please don\'t include phone numbers or emails – contact is shared automatically after the connection.');
+      'Telefonnummern und E-Mail-Adressen sind hier nicht erlaubt und werden automatisch abgelehnt — der Kontakt wird nach der Verbindung automatisch freigegeben. Bitte entfernen, um zu senden.',
+      'Phone numbers and email addresses aren\'t allowed here and are rejected automatically — contact is shared automatically once you\'re connected. Please remove it to send.');
+  String get markUrgentLabel => _t(
+      'Dringend – ich brauche schnell eine Antwort',
+      'Urgent – I need a quick reply');
+  String get urgentRequestBadge => _t('DRINGEND', 'URGENT');
 
   // ── Vermittlungen (credit-based instant reveal) ─────────────────────────────
   String vermittlungRemaining(int x, int y) =>
@@ -1254,8 +1385,14 @@ class AppLocalizations {
   String get websiteOptionalLabel => _t('Website (optional)', 'Website (optional)');
   String get netzwerkGroupLabel => _t('Mein Netzwerk', 'My network');
   String get navAnzeigen => _t('Anzeigen', 'Listings');
-  String get navAnfragen => _t('Anfragen', 'Requests');
-  String get navKontakte => _t('Kontakte', 'Contacts');
+  // Previously 'Anfragen'/'Kontakte' — neither said which DIRECTION the
+  // requests go, and 'Kontakte' (Contacts) actively misled: it opens the
+  // received-requests inbox (Accept/Decline), not an address book of
+  // established connections. Renamed as an explicit sent/received pair,
+  // matching the page titles inside exactly (myRequestsTitle /
+  // receivedRequestsTitle) so the sidebar and the page never disagree.
+  String get navAnfragen => _t('Gesendete Anfragen', 'Sent requests');
+  String get navKontakte => _t('Erhaltene Anfragen', 'Received requests');
   String get noVermittlungenYet => _t('Noch keine Vermittlungen zu Ihren Anzeigen', 'No connections to your posts yet');
   String receivedUnlockedFrom(String city) => city.isEmpty
       ? _t('Ein Unternehmen hat Ihre Anzeige freigeschaltet', 'A company unlocked your post')
@@ -1279,6 +1416,9 @@ class AppLocalizations {
   String get trustIdentityHiddenNote => _t(
       'Der Firmenname ist ausgeblendet. Mit einer Vermittlung schalten Sie Firma, Kontakt und Chat sofort frei.',
       'The company name is hidden. One connection instantly unlocks the company, contact and chat.');
+  String get anonExplainerBannerBody => _t(
+      'Firmennamen sind anonymisiert. Senden Sie eine Nachricht — sobald die Firma antwortet, sehen Sie Name, Kontakt und Chat.',
+      'Company names are anonymized. Send a message — once the company replies, you\'ll see their name, contact, and chat.');
 
   // ── Erhaltene Anfragen (poster inbox) ───────────────────────────────────────
   String get receivedRequestsTitle => _t('Erhaltene Anfragen', 'Received requests');

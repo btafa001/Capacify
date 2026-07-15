@@ -2,9 +2,6 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/services/analytics_service.dart';
-import '../../../shared/widgets/capacify_logo.dart';
-import '../../auth/screens/login_screen.dart';
-import '../../auth/screens/register_screen.dart';
 
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key});
@@ -14,44 +11,24 @@ class AboutScreen extends StatelessWidget {
     WidgetsBinding.instance.addPostFrameCallback((_) => AnalyticsService.logScreenView('About'));
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
-    final isMobile = MediaQuery.of(context).size.width < 600;
     return Scaffold(
       backgroundColor: c.background,
-      // Persistent marketing top bar — the logo returns home and Login/Register
-      // are always reachable, so the page isn't a back-button dead end.
+      // Same plain back-arrow + title app bar as the legal subpages (AGB,
+      // Datenschutz, Impressum) — this screen is reachable from both the
+      // logged-out landing page AND Settings (logged-in), so a single
+      // Navigator.pop() correctly returns to whichever pushed it, instead of
+      // the previous logo-tap-to-home shortcut which assumed landing-only.
       appBar: AppBar(
         backgroundColor: c.surface,
         elevation: 0,
-        automaticallyImplyLeading: false,
-        titleSpacing: 20,
-        title: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: () => Navigator.popUntil(context, (r) => r.isFirst),
-          child: CapacifyWordmark(symbolSize: 28, fontSize: 18, textColor: c.textPrimary),
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back, color: c.textPrimary),
+          onPressed: () => Navigator.pop(context),
         ),
-        actions: [
-          TextButton(
-            onPressed: () =>
-                Navigator.push(context, MaterialPageRoute(builder: (_) => const LoginScreen())),
-            child: Text(l.navLogin, style: TextStyle(color: c.textSecondary, fontWeight: FontWeight.w600)),
-          ),
-          const SizedBox(width: 4),
-          Padding(
-            padding: const EdgeInsets.only(right: 16),
-            child: ElevatedButton(
-              onPressed: () =>
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterScreen())),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primary,
-                foregroundColor: Colors.white,
-                elevation: 0,
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              ),
-              child: Text(isMobile ? l.navStartFreeMobile : l.navStartFree,
-                  style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13)),
-            ),
-          ),
-        ],
+        title: Text(
+          l.navAbout,
+          style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.w900, fontSize: 16),
+        ),
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),

@@ -41,3 +41,25 @@ final myRatingForCompanyProvider =
     raterUserId: key.userId,
   );
 });
+
+typedef CollaboratorLookupKey = ({String myCompanyId, String otherCompanyId});
+
+/// Null unless a granted contact_request actually connects the two companies —
+/// gates the "Bewerten" button on a real collaboration (see
+/// CompanyService.findGrantedRequestId).
+final grantedRequestIdProvider =
+    FutureProvider.family<String?, CollaboratorLookupKey>((ref, key) async {
+  final service = ref.watch(companyServiceProvider);
+  return service.findGrantedRequestId(
+    myCompanyId: key.myCompanyId,
+    otherCompanyId: key.otherCompanyId,
+  );
+});
+
+/// How many companies this one referred (see CompanyService.countReferrals) —
+/// shown in Settings.
+final referralCountProvider =
+    FutureProvider.family<int, String>((ref, companyId) async {
+  final service = ref.watch(companyServiceProvider);
+  return service.countReferrals(companyId);
+});
