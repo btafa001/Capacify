@@ -168,6 +168,16 @@ class DatenschutzScreen extends StatelessWidget {
 
                 _DSection(
                   number: '§5',
+                  title: 'Sichtbarkeit von Profildaten und Ansprechpartner',
+                  paragraphs: const [
+                    'Capacify ist ein Netzwerk zwischen Unternehmen. Bestimmte Profildaten sind für andere Unternehmen auf der Plattform sichtbar: Firmenname, Gewerk/Branche, Standort (Stadt), Bewertungen sowie ein optionales Firmenlogo.',
+                    'Anzeigen können anonym veröffentlicht werden und bleiben bis zur Annahme einer Kontaktanfrage anonym. Erst nach einer angenommenen Kontaktanfrage werden die vollständige Unternehmensidentität sowie der Name der als Ansprechpartner hinterlegten Person der verbundenen Gegenseite angezeigt – insbesondere im Chat, damit erkennbar ist, mit welcher Person kommuniziert wird.',
+                    'Als Ansprechpartner wird der im persönlichen Profil hinterlegte Vor- und Nachname verwendet. Nutzer können diesen Namen jederzeit in ihrem Profil einsehen und ändern.',
+                  ],
+                ),
+
+                _DSection(
+                  number: '§6',
                   title: 'Speicherdauer',
                   paragraphs: const [
                     'Personenbezogene Daten werden nur so lange gespeichert, wie dies für die Bereitstellung der Plattform erforderlich ist.',
@@ -176,7 +186,7 @@ class DatenschutzScreen extends StatelessWidget {
                 ),
 
                 _DSection(
-                  number: '§6',
+                  number: '§7',
                   title: 'Rechte der Nutzer',
                   paragraphs: const [
                     'Nutzer haben insbesondere das Recht auf:',
@@ -192,7 +202,7 @@ class DatenschutzScreen extends StatelessWidget {
                 ),
 
                 _DSection(
-                  number: '§7',
+                  number: '§8',
                   title: 'Sicherheit',
                   paragraphs: const [
                     'Capacify setzt technische und organisatorische Maßnahmen ein, um Daten vor Verlust, Missbrauch und unbefugtem Zugriff zu schützen.',

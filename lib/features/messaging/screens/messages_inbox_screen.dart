@@ -105,6 +105,9 @@ class _ChatRowState extends ConsumerState<_ChatRow> {
     final otherId = widget.chat.otherParticipant(widget.myId);
     final company = ref.watch(companyByIdProvider(otherId)).valueOrNull;
     final name = (company?.name.isNotEmpty ?? false) ? company!.name : l.chatFallbackTitle;
+    // The human Ansprechpartner behind the other company, if they've opened the
+    // thread at least once (denormalized on the chat doc — see ChatModel).
+    final contactName = widget.chat.contactNameFor(otherId);
     final unread = widget.chat.unreadFor(widget.myId);
     final hasUnread = unread > 0;
     // The chat doc itself carries no urgency signal — that lives on the
@@ -165,13 +168,29 @@ class _ChatRowState extends ConsumerState<_ChatRow> {
                         const SizedBox(width: 5),
                       ],
                       Expanded(
-                        child: Text(name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                        child: Text.rich(
+                          TextSpan(
+                            text: name,
                             style: TextStyle(
                                 color: c.textPrimary,
-                                fontWeight: hasUnread ? FontWeight.w900 : FontWeight.w800,
-                                fontSize: 14.5)),
+                                fontWeight:
+                                    hasUnread ? FontWeight.w900 : FontWeight.w800,
+                                fontSize: 14.5),
+                            children: contactName == null
+                                ? null
+                                : [
+                                    TextSpan(
+                                      text: '  ·  $contactName',
+                                      style: TextStyle(
+                                          color: c.textSecondary,
+                                          fontWeight: FontWeight.w500,
+                                          fontSize: 13),
+                                    ),
+                                  ],
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ]),
                     const SizedBox(height: 3),

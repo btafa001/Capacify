@@ -439,6 +439,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     final mine = m.senderId == widget.myCompanyId;
                     final showDate =
                         i == 0 || !_sameDay(messages[i - 1].createdAt, m.createdAt);
+                    // Name the person behind an incoming message at the start of
+                    // each run (sender change or new day). Only the other side is
+                    // labelled — your own messages don't need a "you". Forward-
+                    // compatible with multiple people per company later.
+                    final startOfRun = i == 0 ||
+                        messages[i - 1].senderId != m.senderId ||
+                        showDate;
+                    final showSender =
+                        !mine && startOfRun && otherContactName != null;
                     String? receipt;
                     if (mine && i == myLast) {
                       final seen = otherReadAt != null &&
@@ -451,6 +460,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       children: [
                         if (showDate && m.createdAt != null)
                           _DateChip(label: _dateLabel(m.createdAt!, l)),
+                        if (showSender)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 6, top: 6, bottom: 2),
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(otherContactName!,
+                                  style: TextStyle(
+                                      fontSize: 10.5,
+                                      color: c.textTertiary,
+                                      fontWeight: FontWeight.w700)),
+                            ),
+                          ),
                         _Bubble(text: m.text, at: m.createdAt, mine: mine, receipt: receipt),
                       ],
                     );

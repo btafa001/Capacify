@@ -5,6 +5,7 @@ import '../../../core/models/company_model.dart';
 import '../../../core/models/company_rating_model.dart';
 import '../../../core/services/auth_provider.dart';
 import '../../../core/services/company_provider.dart';
+import '../../../core/services/chat_provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../shared/widgets/star_rating.dart';
 import '../../../shared/widgets/company_logo_avatar.dart';
@@ -66,6 +67,20 @@ class CompanyDetailScreen extends ConsumerWidget {
     final companyAsync = ref.watch(companyByIdProvider(company.id));
     final liveCompany = companyAsync.value ?? company;
     final isMobile = MediaQuery.of(context).size.width < 768;
+    // Ansprechpartner: only shown once we're actually connected to this company
+    // (a granted contact request, whose id is also the chat id). The name lives
+    // on the chat doc — denormalized there per party — so it appears once the
+    // other side has opened the thread. Never shown for anonymous/unconnected
+    // views or my own company.
+    final connectedChatId = (currentUserId != null && !isOwnCompany)
+        ? ref
+            .watch(grantedRequestIdProvider(
+                (myCompanyId: currentUserId, otherCompanyId: company.id)))
+            .value
+        : null;
+    final contactPersonName = connectedChatId == null
+        ? null
+        : ref.watch(chatDocProvider(connectedChatId)).value?.contactNameFor(company.id);
     return Scaffold(
       backgroundColor: c.background,
       appBar: AppBar(
@@ -123,6 +138,27 @@ class CompanyDetailScreen extends ConsumerWidget {
                           color: c.textPrimary,
                         ),
                       ),
+                      if (contactPersonName != null) ...[
+                        const SizedBox(height: 6),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.person_outline,
+                                size: 15, color: c.textSecondary),
+                            const SizedBox(width: 5),
+                            Flexible(
+                              child: Text(
+                                '${l.contactPersonLabel}: $contactPersonName',
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                    fontSize: 13.5,
+                                    fontWeight: FontWeight.w600,
+                                    color: c.textSecondary),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                       const SizedBox(height: 8),
                       // Trade badges
                       Wrap(

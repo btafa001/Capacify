@@ -756,6 +756,7 @@ class AppLocalizations {
   String get companyProfileTitle    => _t('Unternehmensprofil', 'Company Profile');
   String get companyProfileSubtitle => _t('Präsentieren Sie Ihr Unternehmen auf Capacify', 'Present your company on Capacify');
   String get logoUploadHint => _t('Tippen, um ein Logo hochzuladen', 'Tap to upload a logo');
+  String get contactPersonLabel => _t('Ansprechpartner', 'Contact');
   String get logoChangeHint => _t('Tippen, um das Logo zu ändern', 'Tap to change the logo');
   String get logoChange => _t('Logo ändern', 'Change logo');
   String get logoRemove => _t('Logo entfernen', 'Remove logo');
