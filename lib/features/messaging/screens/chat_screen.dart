@@ -5,6 +5,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/services/chat_provider.dart';
+import '../../../core/services/auth_provider.dart';
 import '../../../core/services/company_provider.dart';
 import '../../../core/services/capacity_provider.dart';
 import '../../../core/services/contact_request_provider.dart';
@@ -68,9 +69,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           participants: _participants,
           postId: widget.postId,
         )
-        .then((_) {
+        .then((_) async {
       ref.read(chatServiceProvider).markRead(chatId: widget.chatId, uid: widget.myCompanyId);
       if (mounted) setState(() => _chatReady = true);
+      // Denormalize my own Ansprechpartner name onto the thread so the other
+      // side can see who they're talking to — users/{uid} is owner-private, so
+      // they can't read it live. Best-effort; company id == my uid (1:1).
+      final profile =
+          await ref.read(authServiceProvider).getUserProfile(widget.myCompanyId);
+      final myName = [
+        (profile?['firstName'] as String?)?.trim() ?? '',
+        (profile?['lastName'] as String?)?.trim() ?? '',
+      ].where((s) => s.isNotEmpty).join(' ');
+      if (myName.isNotEmpty) {
+        await ref.read(chatServiceProvider).setContactName(
+              chatId: widget.chatId,
+              uid: widget.myCompanyId,
+              name: myName,
+            );
+      }
     });
     // Also mark the underlying contact_request "seen" for my_capacities_
     // screen.dart's re-engagement badge — harmless no-op if I'm the
@@ -276,6 +293,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final chat = _chatReady ? ref.watch(chatDocProvider(widget.chatId)).valueOrNull : null;
     final otherTyping = chat?.isOtherTyping(widget.myCompanyId) ?? false;
     final otherReadAt = chat?.lastReadBy(widget.otherCompanyId);
+    // The human Ansprechpartner on the other side (shown under the company name
+    // so you know WHO you're talking to, not just which firm). Null until they
+    // first open the thread — the company name alone carries it fine until then.
+    final otherContactName = chat?.contactNameFor(widget.otherCompanyId);
 
     // Keep the thread marked read while I'm looking at it.
     if (chat != null && chat.unreadFor(widget.myCompanyId) > 0) {
@@ -323,7 +344,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   if (otherTyping)
                     Text(l.typingLabel,
                         style: const TextStyle(
-                            color: AppColors.primary, fontSize: 11, fontWeight: FontWeight.w600)),
+                            color: AppColors.primary, fontSize: 11, fontWeight: FontWeight.w600))
+                  else if (otherContactName != null)
+                    Text(otherContactName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            color: c.textSecondary, fontSize: 11.5, fontWeight: FontWeight.w600)),
                 ],
               ),
             ),

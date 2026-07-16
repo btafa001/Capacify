@@ -110,6 +110,71 @@ class _CompanyProfileScreenState
     return 'application/octet-stream';
   }
 
+  /// Tapping the avatar: pick straight away when there's no logo yet, otherwise
+  /// offer change/remove so an existing logo can be swapped or cleared.
+  void _onLogoTap() {
+    final l = AppLocalizations.of(context);
+    final company = _existingCompany;
+    if (company == null) return;
+    if (company.logoUrl.isEmpty) {
+      _pickAndUploadLogo();
+      return;
+    }
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined),
+              title: Text(l.logoChange),
+              onTap: () {
+                Navigator.pop(ctx);
+                _pickAndUploadLogo();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: AppColors.error),
+              title: Text(l.logoRemove,
+                  style: const TextStyle(color: AppColors.error)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _removeLogo();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Clears the logo. Only the Firestore reference is removed (the same
+  /// single-field, mid-edit-safe write as updateLogoUrl on upload); the stored
+  /// object is harmless once unreferenced and a fresh upload overwrites it.
+  Future<void> _removeLogo() async {
+    final l = AppLocalizations.of(context);
+    final company = _existingCompany;
+    if (company == null) return;
+    try {
+      setState(() => _uploadingLogo = true);
+      final service = ref.read(companyServiceProvider);
+      await service.updateLogoUrl(company.id, '');
+      if (mounted) {
+        setState(() => _existingCompany = company.copyWith(logoUrl: ''));
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(l.logoRemoved)));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(l.errorWithMessage(e)), backgroundColor: AppColors.error));
+      }
+    } finally {
+      if (mounted) setState(() => _uploadingLogo = false);
+    }
+  }
+
   /// Uploads straight to Storage + Firestore as soon as a file is picked —
   /// kept out of the main _save() flow (same reasoning as setEmailOptIn) so
   /// it works even mid-edit and doesn't wait on the rest of the form's
@@ -127,7 +192,7 @@ class _CompanyProfileScreenState
       // (often 3-8 MB at full resolution) kept its original pixel dimensions
       // regardless of imageQuality (which only compresses JPEG/WEBP, not PNG),
       // so real photos were routinely rejected by the size cap. 512px is well
-      // above anything the avatar is ever displayed at (44px radius, even at
+      // above anything the avatar is ever displayed at (52px radius, even at
       // 2x/3x DPI), so this never visibly softens the logo.
       final picked = await ImagePicker().pickImage(
         source: ImageSource.gallery,
@@ -140,8 +205,8 @@ class _CompanyProfileScreenState
       final contentType = picked.mimeType ?? _guessMimeType(picked.name);
       setState(() => _uploadingLogo = true);
       final service = ref.read(companyServiceProvider);
-      final url = await service.uploadLogo(
-          companyId: company.id, bytes: bytes, contentType: contentType);
+      final url =
+          await service.uploadLogo(bytes: bytes, contentType: contentType);
       await service.updateLogoUrl(company.id, url);
       if (mounted) {
         setState(() => _existingCompany = company.copyWith(logoUrl: url));
@@ -153,8 +218,8 @@ class _CompanyProfileScreenState
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(l.errorWithMessage(e)), backgroundColor: AppColors.error));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(l.errorWithMessage(e)), backgroundColor: AppColors.error));
       }
     } finally {
       if (mounted) setState(() => _uploadingLogo = false);
@@ -240,6 +305,17 @@ class _CompanyProfileScreenState
             ? company.employees
             : kEmployeeCounts[0];
         _selectedServices = List.from(company.services);
+      }
+    } catch (e) {
+      // A read failure here (e.g. a transient Firestore/permission error) used
+      // to propagate uncaught out of the initState call site, leaving
+      // _existingCompany null with no feedback — the profile looked empty and
+      // the logo section (gated on _existingCompany != null) silently vanished,
+      // which is why the camera icon was missing "for some accounts". Surface
+      // it instead of swallowing it so the state is explainable, not invisible.
+      debugPrint('loadExistingCompany failed: $e');
+      if (mounted) {
+        setState(() => _errorMessage = AppLocalizations.of(context).errorWithMessage(e));
       }
     } finally {
       if (mounted) {
@@ -563,14 +639,14 @@ class _CompanyProfileScreenState
                     child: Column(
                       children: [
                         GestureDetector(
-                          onTap: _uploadingLogo ? null : _pickAndUploadLogo,
+                          onTap: _uploadingLogo ? null : _onLogoTap,
                           child: Stack(
                             clipBehavior: Clip.none,
                             children: [
                               CompanyLogoAvatar(
                                 logoUrl: _existingCompany!.logoUrl,
                                 companyName: _existingCompany!.name,
-                                radius: 44,
+                                radius: 52,
                               ),
                               if (_uploadingLogo)
                                 const Positioned.fill(
@@ -602,7 +678,12 @@ class _CompanyProfileScreenState
                           ),
                         ),
                         const SizedBox(height: 8),
-                        Text(l.logoUploadHint, style: TextStyle(fontSize: 12, color: c.textTertiary)),
+                        Text(
+                          _existingCompany!.logoUrl.isEmpty
+                              ? l.logoUploadHint
+                              : l.logoChangeHint,
+                          style: TextStyle(fontSize: 12, color: c.textTertiary),
+                        ),
                       ],
                     ),
                   ),

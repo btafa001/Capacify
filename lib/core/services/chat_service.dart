@@ -31,6 +31,26 @@ class ChatService {
     });
   }
 
+  /// Denormalizes MY own Ansprechpartner name onto the thread so the other
+  /// party (who can't read my owner-private users/{uid} doc) can see who they're
+  /// talking to. Only ever writes my own entry; the chat must already exist
+  /// (call after ensureChat) so this stays an update, not a rules-rejected
+  /// create. Best-effort — a failure just leaves the name unshown.
+  Future<void> setContactName({
+    required String chatId,
+    required String uid,
+    required String name,
+  }) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return;
+    try {
+      await _chats.doc(chatId).update({'contactNames.$uid': trimmed});
+    } catch (_) {
+      // Thread not created yet, or a transient rules/network hiccup — the name
+      // is a nice-to-have, never worth surfacing an error for.
+    }
+  }
+
   /// Live doc stream for one thread — drives unread/read-receipt/typing state.
   Stream<ChatModel?> chatDoc(String chatId) {
     return _chats

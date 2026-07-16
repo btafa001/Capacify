@@ -1,7 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:http/http.dart' as http;
 import '../models/company_model.dart';
 import '../models/company_rating_model.dart';
 
@@ -57,8 +58,15 @@ class CompanyService {
   /// writes via the Admin SDK (bypasses Storage rules entirely — no client
   /// metadata transmission involved at all). storage.rules now denies ALL
   /// client writes to this path; only this function can write here.
+  ///
+  /// Calls the function via a plain HTTP POST (package:http) rather than
+  /// cloud_functions' httpsCallable — the callable SDK tries to attach an App
+  /// Check token to every call, and a broken App Check config made that
+  /// attachment step fail and take the whole upload down with it, even with
+  /// App Check enforcement off. A raw POST with the Firebase ID token as a
+  /// Bearer header sidesteps that path entirely; the function verifies the
+  /// token by hand instead of relying on onCall's req.auth.
   Future<String> uploadLogo({
-    required String companyId,
     required Uint8List bytes,
     required String contentType,
   }) async {
@@ -69,13 +77,34 @@ class CompanyService {
     if (bytes.lengthInBytes >= 1024 * 1024) {
       throw const InvalidLogoFileException('Die Datei ist größer als 1 MB.');
     }
-    if (!contentType.startsWith('image/')) {
-      throw const InvalidLogoFileException('Bitte wählen Sie eine Bilddatei.');
+    // Fast, friendly pre-check only. The Cloud Function is the real gate: it
+    // sniffs the actual bytes and rejects anything that isn't a genuine raster
+    // image (SVG included), so a spoofed contentType here changes nothing.
+    const allowedTypes = {
+      'image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif',
+    };
+    if (!allowedTypes.contains(contentType.toLowerCase())) {
+      throw const InvalidLogoFileException(
+          'Bitte wählen Sie ein PNG-, JPG-, WEBP- oder GIF-Bild.');
     }
-    final result = await FirebaseFunctions.instanceFor(region: 'europe-west3')
-        .httpsCallable('uploadCompanyLogo')
-        .call({'base64Data': base64Encode(bytes), 'contentType': contentType});
-    return result.data['url'] as String;
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      throw const InvalidLogoFileException('Bitte melden Sie sich erneut an.');
+    }
+    final idToken = await user.getIdToken();
+    final response = await http.post(
+      Uri.https('europe-west3-capacify-mvp.cloudfunctions.net', '/uploadCompanyLogo'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $idToken',
+      },
+      body: jsonEncode({'base64Data': base64Encode(bytes), 'contentType': contentType}),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('uploadCompanyLogo ${response.statusCode}: ${response.body}');
+    }
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    return data['url'] as String;
   }
 
   /// Persists the logo URL alone — same "single owner-writable field, kept
@@ -253,29 +282,80 @@ class CompanyService {
     required String myCompanyId,
     required String otherCompanyId,
   }) async {
-    Future<String?> search(String requesterId, String posterId) async {
-      final granted = await _firestore
+    // Fails CLOSED. This only decides whether the "Bewerten" button is offered;
+    // firestore.rules' isGrantedConnectionBetween() is the real gate, re-run on
+    // the rating write. So ANY read error here resolves to "no connection"
+    // (button disabled) rather than propagating — an unhandled error out of
+    // this lookup is what surfaced as the grey overlay on the detail dialog, so
+    // swallowing it makes the non-admin path drive the exact same clean
+    // "null" state the admin path already does.
+    try {
+      // Direction 1: I requested one of THEIR posts and they granted it. Every
+      // doc this query returns is my OWN request (requesterCompanyId == me), so
+      // the contact_requests read rule's requester branch authorizes the whole
+      // list at once.
+      final asRequester = await _firestore
           .collection('contact_requests')
-          .where('requesterCompanyId', isEqualTo: requesterId)
+          .where('requesterCompanyId', isEqualTo: myCompanyId)
           .where('status', isEqualTo: 'granted')
           .get();
-      for (final doc in granted.docs) {
+      for (final doc in asRequester.docs) {
         final postId = doc.data()['postId'] as String?;
         if (postId == null) continue;
         final owner =
             await _firestore.collection('capacityOwners').doc(postId).get();
-        if (owner.exists && owner.data()?['posterCompanyId'] == posterId) {
+        if (owner.exists &&
+            owner.data()?['posterCompanyId'] == otherCompanyId) {
           return doc.id;
         }
       }
+
+      // Direction 2: THEY requested one of MY posts and I granted it.
+      //
+      // This must NOT be done by querying `where requesterCompanyId ==
+      // otherCompanyId` — I am not the requester on those docs, so
+      // firestore.rules only authorizes them one-by-one via the poster branch
+      // (get(capacityOwners[postId]).posterCompanyId == me). Such a query also
+      // sweeps in the other company's granted requests to OTHER posters' posts,
+      // which I can't read, and Firestore then fails the ENTIRE query with
+      // permission-denied rather than returning a subset. That denial was the
+      // source of the grey overlay covering the company detail dialog for every
+      // non-admin viewer (admins slipped past it via the rules' isAdmin()
+      // branch, which is why it never reproduced on the admin account).
+      //
+      // A per-post deterministic-id get (`{otherCompanyId}_{postId}`) is NOT a
+      // valid shortcut either: the read rule only lets me probe a NON-existent
+      // request whose id starts with my OWN uid, so a miss on a post they never
+      // requested is itself denied. Querying MY posts by postId is the only
+      // shape that dodges both traps — it returns only existing docs on posts I
+      // own, each authorized by the poster branch — the same shape as
+      // ContactRequestService.receivedRequests.
+      final myOwners = await _firestore
+          .collection('capacityOwners')
+          .where('posterCompanyId', isEqualTo: myCompanyId)
+          .limit(500)
+          .get();
+      final myPostIds = myOwners.docs.map((d) => d.id).toList();
+      for (var i = 0; i < myPostIds.length; i += 10) {
+        final end = (i + 10 < myPostIds.length) ? i + 10 : myPostIds.length;
+        final chunk = myPostIds.sublist(i, end); // whereIn caps at 10.
+        final onMyPosts = await _firestore
+            .collection('contact_requests')
+            .where('postId', whereIn: chunk)
+            .get();
+        for (final doc in onMyPosts.docs) {
+          final data = doc.data();
+          if (data['status'] == 'granted' &&
+              data['requesterCompanyId'] == otherCompanyId) {
+            return doc.id;
+          }
+        }
+      }
+      return null;
+    } catch (_) {
+      // Fail closed — see the method's opening comment.
       return null;
     }
-
-    // Direction 1: I requested one of THEIR posts and they granted it.
-    final asRequester = await search(myCompanyId, otherCompanyId);
-    if (asRequester != null) return asRequester;
-    // Direction 2: THEY requested one of MY posts and I granted it.
-    return search(otherCompanyId, myCompanyId);
   }
 
   /// Withdraws the rater's own rating. Only deletes the review doc — it does

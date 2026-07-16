@@ -24,7 +24,17 @@ const int kServiceRadiusKm = 50;
 // registration expected this new one, so every token Firestore/Auth received
 // was rejected (surfaced as a generic permission-denied, even on `allow read:
 // if true` collections, since App Check rejects before rules ever evaluate).
-const String kAppCheckRecaptchaSiteKey = '6Ldgvk0tAAAAAIvbk0uuaxsb1oox2YUNxylCV0g_';
+//
+// Rotated again 2026-07-16: the 2026-07-11 key (6Ldgvk0tAAAAAIvbk0uuaxsb1oox2YUNxylCV0g_)
+// ended up split across several disconnected reCAPTCHA admin-console entries
+// with inconsistent domain allowlists (some had capacify.de, some didn't),
+// so reCAPTCHA itself rejected it in production ("Invalid site key or not
+// loaded in api.js") regardless of what Firebase's App Check registration
+// expected — same failure mode as the first rotation, just from the domain
+// list instead of the key value. This key is a single fresh reCAPTCHA v3
+// entry with capacify.de, capacify-mvp.web.app, capacify-mvp.firebaseapp.com,
+// and localhost all on it, replacing every prior entry.
+const String kAppCheckRecaptchaSiteKey = '6Lem2FUtAAAAAAKuVNafvIZWj7fQsdJdxxJe0Zt9';
 
 // Firebase Cloud Messaging — Web Push VAPID public key (public; safe in
 // client). Generated in Firebase Console → Project Settings → Cloud Messaging

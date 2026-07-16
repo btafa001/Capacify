@@ -7,6 +7,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/models/capacity_model.dart';
 import '../../../core/models/company_model.dart';
 import '../../../core/models/report_model.dart';
+import '../../../shared/widgets/company_logo_avatar.dart';
 import '../../../core/services/capacity_provider.dart';
 import '../../../core/services/auth_provider.dart';
 import '../../../core/services/company_provider.dart';
@@ -1074,20 +1075,16 @@ class _LiveCapacityCard extends ConsumerWidget {
                                   ),
                                 ),
                                 child: Row(mainAxisSize: MainAxisSize.min, children: [
-                                  CircleAvatar(
-                                    radius: 10,
-                                    backgroundColor: AppColors.primary.withOpacity(0.15),
-                                    backgroundImage: (capacity.posterLogoUrl ?? '').isEmpty
-                                        ? null
-                                        : NetworkImage(capacity.posterLogoUrl!),
-                                    child: (capacity.posterLogoUrl ?? '').isEmpty
-                                        ? Text(
-                                            (capacity.posterCompanyName ?? '').isNotEmpty
-                                                ? capacity.posterCompanyName![0].toUpperCase()
-                                                : '?',
-                                            style: const TextStyle(color: AppColors.primary, fontSize: 9, fontWeight: FontWeight.w900),
-                                          )
-                                        : null,
+                                  // CompanyLogoAvatar (not a raw CircleAvatar +
+                                  // NetworkImage) so the logo actually renders on
+                                  // Flutter Web — see its doc comment: a network
+                                  // image textured by CanvasKit fails on the
+                                  // CORS-less Storage URL, this path uses an
+                                  // <img> element instead.
+                                  CompanyLogoAvatar(
+                                    logoUrl: capacity.posterLogoUrl ?? '',
+                                    companyName: capacity.posterCompanyName ?? '',
+                                    radius: 13,
                                   ),
                                   const SizedBox(width: 6),
                                   Flexible(

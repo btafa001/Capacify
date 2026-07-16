@@ -7,6 +7,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/models/capacity_model.dart';
 import '../../../core/models/capacity_owner_model.dart';
 import '../../../core/models/company_model.dart';
+import '../../../shared/widgets/company_logo_avatar.dart';
 import '../../../core/models/contact_request_model.dart';
 import '../../../core/services/capacity_provider.dart';
 import '../../../core/services/company_provider.dart';
@@ -640,20 +641,13 @@ class _CapacityDetailScreenState
                         ),
                       ),
                       child: Row(children: [
-                        CircleAvatar(
-                          radius: 14,
-                          backgroundColor: AppColors.primary.withOpacity(0.15),
-                          backgroundImage: (capacity.posterLogoUrl ?? '').isEmpty
-                              ? null
-                              : NetworkImage(capacity.posterLogoUrl!),
-                          child: (capacity.posterLogoUrl ?? '').isEmpty
-                              ? Text(
-                                  (capacity.posterCompanyName ?? '').isNotEmpty
-                                      ? capacity.posterCompanyName![0].toUpperCase()
-                                      : '?',
-                                  style: const TextStyle(color: AppColors.primary, fontSize: 12, fontWeight: FontWeight.w900),
-                                )
-                              : null,
+                        // CompanyLogoAvatar renders the logo via an <img> so it
+                        // shows on Flutter Web (a CanvasKit-textured NetworkImage
+                        // fails on the CORS-less Storage URL — see its doc).
+                        CompanyLogoAvatar(
+                          logoUrl: capacity.posterLogoUrl ?? '',
+                          companyName: capacity.posterCompanyName ?? '',
+                          radius: 16,
                         ),
                         const SizedBox(width: 8),
                         Flexible(

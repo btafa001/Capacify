@@ -17,6 +17,13 @@ class ChatModel {
   final Map<String, int> unread; // undelivered-to-me count
   final Map<String, DateTime> reads; // when each party last opened the thread
   final Map<String, DateTime> typing; // last "is typing" heartbeat
+  // The human Ansprechpartner behind each company, keyed by company id. Each
+  // party writes ONLY its own entry (it can't read the other's users/{uid} doc,
+  // which is owner-private), so the counterparty's name is denormalized here —
+  // where both participants can read it — rather than fetched live. Populated
+  // on chat open; a company id may be absent until that party first opens the
+  // thread, so callers must tolerate a null.
+  final Map<String, String> contactNames;
 
   ChatModel({
     required this.id,
@@ -29,11 +36,18 @@ class ChatModel {
     this.unread = const {},
     this.reads = const {},
     this.typing = const {},
+    this.contactNames = const {},
   });
 
   /// The other participant's company id, from the viewer's perspective.
   String otherParticipant(String myId) =>
       participants.firstWhere((p) => p != myId, orElse: () => '');
+
+  /// The contact person's name for a company, or null if not yet known.
+  String? contactNameFor(String companyId) {
+    final n = contactNames[companyId];
+    return (n != null && n.trim().isNotEmpty) ? n : null;
+  }
 
   int unreadFor(String myId) => unread[myId] ?? 0;
   bool hasUnread(String myId) => unreadFor(myId) > 0;
@@ -73,6 +87,10 @@ class ChatModel {
           : const {},
       reads: _readMap(data['reads']),
       typing: _readMap(data['typing']),
+      contactNames: (data['contactNames'] is Map)
+          ? (data['contactNames'] as Map).map(
+              (k, v) => MapEntry(k as String, v?.toString() ?? ''))
+          : const {},
     );
   }
 }

@@ -14,6 +14,7 @@ import '../../core/services/company_provider.dart';
 import '../../core/services/capacity_provider.dart';
 import '../../core/services/saved_search_service.dart';
 import '../../core/services/notification_provider.dart';
+import '../../core/services/admin_provider.dart';
 import '../messaging/screens/chat_screen.dart';
 import '../opportunities/screens/capacity_detail_screen.dart';
 import '../company/screens/company_detail_screen.dart';
@@ -196,9 +197,14 @@ class _NotificationCenter extends ConsumerWidget {
     final chats = ref.watch(myChatsProvider(uid)).valueOrNull ?? [];
     final unreadChats = chats.where((ch) => ch.unreadFor(uid) > 0).toList();
     final matches = ref.watch(matchAlertsProvider(uid));
-    final adminNotifs = (ref.watch(myNotificationsProvider(uid)).valueOrNull ?? [])
-        .where((n) => n.isAdminEvent)
-        .toList();
+    // Gated on CURRENT isAdmin, not just on whose uid old fan-out docs happen
+    // to be addressed to — see unreadAdminNotificationsProvider for why.
+    final isAdmin = ref.watch(isAdminProvider).valueOrNull ?? false;
+    final adminNotifs = isAdmin
+        ? (ref.watch(myNotificationsProvider(uid)).valueOrNull ?? [])
+            .where((n) => n.isAdminEvent)
+            .toList()
+        : <NotificationModel>[];
 
     final recentVermittlungen = [...vermittlungen]
       ..sort((a, b) => (b.createdAt ?? DateTime(0)).compareTo(a.createdAt ?? DateTime(0)));

@@ -330,7 +330,7 @@ class _CompanyCardState extends State<_CompanyCard> {
                             CompanyLogoAvatar(
                               logoUrl: company.logoUrl,
                               companyName: company.name,
-                              radius: 21,
+                              radius: 26,
                             ),
                             const Spacer(),
                             _VerificationBadge(status: company.verificationStatus),

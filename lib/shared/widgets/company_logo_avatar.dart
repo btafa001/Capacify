@@ -1,19 +1,25 @@
 import 'package:flutter/material.dart';
 import '../../core/theme/app_theme.dart';
 
-/// A company logo avatar that degrades to initials on ANY load failure —
-/// including the Flutter-Web-specific bug where a network image that trips a
-/// browser-native fallback path (bad CORS headers, an unexpected
-/// content-type, a redirect) renders at its native size, ignoring Flutter's
-/// own width/height constraints — seen as a huge grey box overtaking a
-/// dialog. A hard SizedBox+ClipOval+Image.network wrapper (tried first, in
-/// company_detail_screen.dart) did NOT actually stop this. CircleAvatar's
-/// backgroundImage paints through BoxDecoration.image, a different pipeline
-/// that's always bounded to the avatar's own circle by Flutter's own paint
-/// step — it can't leak past that regardless of what the underlying image
-/// does. This is the same mechanism already used (and never buggy) for the
-/// avatars on live_capacity_feed_screen.dart's feed cards.
-class CompanyLogoAvatar extends StatefulWidget {
+/// A company logo avatar that degrades to initials on ANY load failure.
+///
+/// Renders the logo through an HTML `<img>` element (Image.network with
+/// `webHtmlElementStrategy`) rather than CircleAvatar's backgroundImage. Reason:
+/// on Flutter Web the CanvasKit renderer decodes a network image into a WebGL
+/// texture, which browsers forbid for a CROSS-ORIGIN image that arrives without
+/// `Access-Control-Allow-Origin`. Firebase Storage's own download URLs
+/// (firebasestorage.googleapis.com/...&token=) serve the bytes fine but send NO
+/// CORS header for the new-format `.firebasestorage.app` bucket, so every logo
+/// failed to texture and fell back to initials. A plain `<img>` has no such
+/// restriction — the browser displays cross-origin images, only blocking
+/// pixel-readback — so this path shows the logo without any bucket CORS config.
+///
+/// `WebHtmlElementStrategy.prefer` uses the `<img>` directly instead of first
+/// attempting (and failing) the CanvasKit fetch, avoiding a wasted request per
+/// logo. The image is hard-bounded by a fixed SizedBox + ClipOval so it can
+/// never render at its native size and overflow (an old failure mode of a bare
+/// Image.network here). On mobile/desktop this strategy is simply ignored.
+class CompanyLogoAvatar extends StatelessWidget {
   final String logoUrl;
   final String companyName;
   final double radius;
@@ -24,42 +30,41 @@ class CompanyLogoAvatar extends StatefulWidget {
     this.radius = 40,
   });
 
-  @override
-  State<CompanyLogoAvatar> createState() => _CompanyLogoAvatarState();
-}
-
-class _CompanyLogoAvatarState extends State<CompanyLogoAvatar> {
-  bool _failed = false;
-
-  @override
-  void didUpdateWidget(covariant CompanyLogoAvatar old) {
-    super.didUpdateWidget(old);
-    // A different URL (e.g. a fresh upload) deserves a fresh attempt.
-    if (old.logoUrl != widget.logoUrl) _failed = false;
+  Widget _initials() {
+    final size = radius * 2;
+    return Container(
+      width: size,
+      height: size,
+      alignment: Alignment.center,
+      color: AppColors.primary.withOpacity(0.15),
+      child: Text(
+        companyName.isNotEmpty ? companyName[0].toUpperCase() : 'U',
+        style: TextStyle(
+          color: AppColors.primary,
+          fontWeight: FontWeight.bold,
+          fontSize: radius * 0.75,
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final showImage = widget.logoUrl.isNotEmpty && !_failed;
-    return CircleAvatar(
-      radius: widget.radius,
-      backgroundColor: AppColors.primary.withOpacity(0.15),
-      backgroundImage: showImage ? NetworkImage(widget.logoUrl) : null,
-      onBackgroundImageError: showImage
-          ? (_, __) {
-              if (mounted) setState(() => _failed = true);
-            }
-          : null,
-      child: showImage
-          ? null
-          : Text(
-              widget.companyName.isNotEmpty ? widget.companyName[0].toUpperCase() : 'U',
-              style: TextStyle(
-                color: AppColors.primary,
-                fontWeight: FontWeight.bold,
-                fontSize: widget.radius * 0.75,
-              ),
-            ),
+    final size = radius * 2;
+    final Widget content = logoUrl.isEmpty
+        ? _initials()
+        : Image.network(
+            logoUrl,
+            width: size,
+            height: size,
+            fit: BoxFit.cover,
+            webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
+            errorBuilder: (_, __, ___) => _initials(),
+          );
+    return SizedBox(
+      width: size,
+      height: size,
+      child: ClipOval(child: content),
     );
   }
 }

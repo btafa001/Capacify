@@ -25,7 +25,7 @@
 // retention emails are ENGAGEMENT — they additionally require the recipient to
 // have opted in (companies/{id}.emailOptIn == true). Every email/push path is
 // a no-op until SMTP_URL / an FCM token exists, so the app is unaffected until then.
-const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { onDocumentWritten, onDocumentCreated } = require('firebase-functions/v2/firestore');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { setGlobalOptions } = require('firebase-functions/v2');
@@ -34,7 +34,14 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const moderation = require('./moderation');
 
-admin.initializeApp();
+// storageBucket MUST be set explicitly. This project's only bucket is the
+// new-format `capacify-mvp.firebasestorage.app`; there is NO legacy
+// `capacify-mvp.appspot.com` bucket (it 404s). With no storageBucket here,
+// admin.storage().bucket() falls back to the legacy `<projectId>.appspot.com`
+// name, so every uploadCompanyLogo .save() wrote to a bucket that doesn't
+// exist and failed — the source of the logo-upload error. Naming the real
+// bucket makes both the write and the returned download URL correct.
+admin.initializeApp({ storageBucket: 'capacify-mvp.firebasestorage.app' });
 // 5 is the SAFE DEFAULT for anything with real per-call cost (an external API
 // call, an email send, an admin/account-lifecycle action) — deliberately tight
 // so a traffic spike can't runaway-bill. It was previously the ceiling for
@@ -126,47 +133,151 @@ exports.verifyMyCompany = onCall(async (req) => {
 // would keep resolving to whatever's newest at that path anyway, but a fresh
 // token also invalidates any previously-shared direct link).
 // ─────────────────────────────────────────────────────────────────────────────
-exports.uploadCompanyLogo = onCall(async (req) => {
-  if (!req.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
-  const { base64Data, contentType } = req.data || {};
-  if (!base64Data || typeof base64Data !== 'string') {
-    throw new HttpsError('invalid-argument', 'Missing image data.');
+// Rebuilt as a plain onRequest HTTP function (was onCall) — the callable
+// wrapper's client SDK tries to attach an App Check token to every request
+// before it goes out, and a broken/unregistered App Check configuration made
+// that attachment step itself fail, taking the whole upload down with it even
+// though App Check enforcement was never turned on for this function. A raw
+// POST + manual ID-token verification has no App Check involvement at all, so
+// it can't be taken out by that same failure mode. Auth is now verified by
+// hand via admin.auth().verifyIdToken() instead of the req.auth the onCall
+// wrapper used to provide.
+// Authoritative decoded-size cap for a logo (1 MB). The client resizes to
+// max 512px first, so a real logo lands far below this.
+const LOGO_MAX_BYTES = 1024 * 1024;
+
+// Identify the image type from the BYTES (magic number), not the client's
+// declared content-type. Only genuine raster formats pass — SVG is
+// deliberately excluded: an image/svg+xml is active content, and since logos
+// are world-readable and served inline off firebasestorage.googleapis.com via
+// a download token, a script-bearing SVG (or any payload mislabeled as an
+// image) would be a stored-XSS / phishing vector hosted under the project.
+// Returns the canonical content-type to store, or null if it isn't a
+// supported raster image.
+function sniffRasterImageType(buf) {
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e &&
+      buf[3] === 0x47 && buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a &&
+      buf[7] === 0x0a) return 'image/png';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return 'image/jpeg';
   }
-  if (!contentType || typeof contentType !== 'string' || !contentType.startsWith('image/')) {
-    throw new HttpsError('invalid-argument', 'File must be an image.');
+  if (buf.length >= 6 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 &&
+      buf[3] === 0x38 && (buf[4] === 0x37 || buf[4] === 0x39) && buf[5] === 0x61) {
+    return 'image/gif';
+  }
+  if (buf.length >= 12 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 &&
+      buf[3] === 0x46 && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 &&
+      buf[11] === 0x50) return 'image/webp';
+  return null;
+}
+
+// Browser origins allowed to script against this endpoint. Auth is a Bearer ID
+// token (never an ambient cookie), so this is NOT a CSRF control — a foreign
+// site can't obtain a capacify user's token — it's hygiene that stops arbitrary
+// origins reading responses. Non-browser callers ignore CORS entirely.
+const LOGO_ALLOWED_ORIGINS = new Set([
+  'https://capacify.de',
+  'https://www.capacify.de',
+  'https://capacify-mvp.web.app',
+  'https://capacify-mvp.firebaseapp.com',
+]);
+function logoAllowedOrigin(origin) {
+  if (!origin) return null;
+  if (LOGO_ALLOWED_ORIGINS.has(origin)) return origin;
+  // Local dev: `flutter run` serves on an arbitrary localhost port.
+  if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return origin;
+  return null;
+}
+
+exports.uploadCompanyLogo = onRequest(async (req, res) => {
+  const allowedOrigin = logoAllowedOrigin(req.get('Origin'));
+  if (allowedOrigin) {
+    res.set('Access-Control-Allow-Origin', allowedOrigin);
+    res.set('Vary', 'Origin');
+    res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.set('Access-Control-Max-Age', '3600');
+  }
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Method not allowed.' });
+    return;
+  }
+
+  const authHeader = req.get('Authorization') || '';
+  const bearerMatch = authHeader.match(/^Bearer (.+)$/);
+  if (!bearerMatch) {
+    res.status(401).json({ error: 'Sign in required.' });
+    return;
+  }
+  let uid;
+  try {
+    uid = (await admin.auth().verifyIdToken(bearerMatch[1])).uid;
+  } catch (e) {
+    res.status(401).json({ error: 'Invalid or expired session.' });
+    return;
+  }
+
+  const { base64Data } = req.body || {};
+  if (!base64Data || typeof base64Data !== 'string') {
+    res.status(400).json({ error: 'Missing image data.' });
+    return;
+  }
+  // Reject oversize payloads BEFORE allocating the decoded buffer: base64 is
+  // ~4/3 of the binary length, so anything past this can't be a <1 MB image and
+  // we refuse to spend memory decoding it. (Cloud Run caps the request body too,
+  // but this bounds our own allocation regardless of that limit.)
+  if (base64Data.length > Math.ceil((LOGO_MAX_BYTES * 4) / 3) + 4) {
+    res.status(400).json({ error: 'File must be a non-empty image under 1 MB.' });
+    return;
   }
 
   let buffer;
   try {
     buffer = Buffer.from(base64Data, 'base64');
   } catch (e) {
-    throw new HttpsError('invalid-argument', 'Could not read the image data.');
+    res.status(400).json({ error: 'Could not read the image data.' });
+    return;
   }
   // The authoritative cap — this Admin SDK write is the only path that can
   // actually reach Storage, so this is what really bounds per-logo cost, not
   // the client's own pre-check. The client already resizes to max 512px
   // before it gets here, so a real photo should land well under this.
-  if (buffer.length === 0 || buffer.length >= 1024 * 1024) {
-    throw new HttpsError('invalid-argument', 'File must be a non-empty image under 1 MB.');
+  if (buffer.length === 0 || buffer.length >= LOGO_MAX_BYTES) {
+    res.status(400).json({ error: 'File must be a non-empty image under 1 MB.' });
+    return;
   }
 
-  const uid = req.auth.uid;
+  // Trust the bytes, not the caller: only real PNG/JPEG/GIF/WEBP data passes,
+  // and the SNIFFED type — never a client-supplied string — is what gets stored
+  // and served. This is what actually blocks an SVG-with-script or a payload
+  // mislabeled as an image from being hosted as one.
+  const imageType = sniffRasterImageType(buffer);
+  if (!imageType) {
+    res.status(400).json({ error: 'Nur PNG-, JPG-, WEBP- oder GIF-Bilder werden unterstützt.' });
+    return;
+  }
+
   const path = `company_logos/${uid}/logo`;
   const token = crypto.randomUUID();
   const bucket = admin.storage().bucket();
 
   try {
     await bucket.file(path).save(buffer, {
-      contentType,
+      contentType: imageType,
       metadata: { metadata: { firebaseStorageDownloadTokens: token } },
     });
   } catch (e) {
     console.error('uploadCompanyLogo: save failed', e);
-    throw new HttpsError('internal', 'Could not upload the logo.');
+    res.status(500).json({ error: 'Could not upload the logo.' });
+    return;
   }
 
   const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
-  return { url };
+  res.status(200).json({ url });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -102,15 +102,14 @@ class CompanyDetailScreen extends ConsumerWidget {
                   border: Border.all(color: c.border),
                 ),
                 child: Builder(builder: (context) {
-                  // A SizedBox+ClipOval+Image.network wrapper was tried here
-                  // first and did NOT actually stop the huge-grey-box bug —
-                  // CompanyLogoAvatar uses CircleAvatar's backgroundImage
-                  // instead, the same mechanism already proven reliable for
-                  // the feed cards' avatars (see its own doc comment for why).
+                  // Always go through CompanyLogoAvatar (never a raw
+                  // Image.network) — it renders the logo via an <img> element so
+                  // it survives Flutter Web's CORS-less Storage URLs and stays
+                  // bounded to its circle (see its own doc comment for why).
                   final avatar = CompanyLogoAvatar(
                     logoUrl: company.logoUrl,
                     companyName: company.name,
-                    radius: 40,
+                    radius: 48,
                   );
 
                   final info = Column(
