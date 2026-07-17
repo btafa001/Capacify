@@ -801,8 +801,14 @@ class _RateCompanyDialogState extends ConsumerState<_RateCompanyDialog> {
               Text(_error!, style: const TextStyle(color: AppColors.error, fontSize: 13)),
             ],
             const SizedBox(height: 24),
+            // Secondary actions (delete/cancel) stay a compact trailing row;
+            // Submit is its own full-width row below. Packing all three into
+            // one Row (as before) overflowed on narrower widths — German
+            // labels like "Bewertung löschen" + "Bewertung abschicken" don't
+            // fit alongside Cancel in the ~370dp a 420-capped dialog leaves
+            // after padding, so the submit button got clipped off the edge.
+            // Full-width also reads as the obviously primary action.
             Row(
-              mainAxisAlignment: MainAxisAlignment.end,
               children: [
                 if (widget.existingRating != null) ...[
                   TextButton(
@@ -810,27 +816,30 @@ class _RateCompanyDialogState extends ConsumerState<_RateCompanyDialog> {
                     child: Text(l.deleteRatingButton, style: const TextStyle(color: AppColors.error)),
                   ),
                   const Spacer(),
-                ],
+                ] else
+                  const Spacer(),
                 TextButton(
                   onPressed: _isSaving ? null : () => Navigator.pop(context),
                   child: Text(l.cancel),
                 ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed: _isSaving ? null : _submit,
-                  style: ElevatedButton.styleFrom(
-                    minimumSize: Size.zero,
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                  ),
-                  child: _isSaving
-                      ? const SizedBox(
-                          height: 16,
-                          width: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                        )
-                      : Text(l.submitRatingButton),
-                ),
               ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _isSaving ? null : _submit,
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                child: _isSaving
+                    ? const SizedBox(
+                        height: 16,
+                        width: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
+                    : Text(l.submitRatingButton),
+              ),
             ),
           ],
         ),
