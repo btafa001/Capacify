@@ -106,7 +106,15 @@ class CompanyDetailScreen extends ConsumerWidget {
           child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 800),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            // .stretch (was .start) — every direct child here is a full-width
+            // card (hero/_DetailSection/rating bar) or a height-only spacer, so
+            // stretching is safe and makes them all span the same width. With
+            // .start each Container only shrink-wrapped to its OWN content: the
+            // hero card narrowed to fit its (short) name/trades, while the
+            // rating bar's rate-button Align defaults to expanding full-width —
+            // an unrelated quirk of that one child — so the two cards ended up
+            // visibly different widths despite being siblings.
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               // Hero section
               Container(
