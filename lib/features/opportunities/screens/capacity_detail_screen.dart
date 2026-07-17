@@ -176,10 +176,14 @@ class _CapacityDetailScreenState
   /// The entire contact area. States:
   ///   owner / closed / cancelled → nothing (handled elsewhere / bottom bar).
   ///   revealed (_ownerDoc released to owner, admin, or a granted requester) →
-  ///     the identity: company name + contact + optional outcome feedback.
-  ///   anonymous → the trust block (verification/rating/district/trade, NO
-  ///     name) plus the request status if one exists.
-  /// Identity only ever appears in the revealed branch, sourced from the
+  ///     the trust block (still shown — see _buildTrustBlock) + identity:
+  ///     company name + contact + optional outcome feedback.
+  ///   not yet revealed → the trust block (verification/rating/district/
+  ///     trade, no contact) plus the request status if one exists.
+  /// The trust block appears in BOTH states, in the same position, so it
+  /// doesn't visibly vanish/get replaced the moment a request is accepted —
+  /// it used to be reveal-only content that fully displaced it. Identity
+  /// itself only ever appears in the revealed branch, sourced from the
   /// rule-released _ownerDoc — never from the public post. The primary
   /// "Interesse senden" action lives in the sticky bottom bar.
   Widget _buildContactGate(AppLocalizations l, bool isOwner) {
@@ -214,6 +218,8 @@ class _CapacityDetailScreenState
       return Padding(
         padding: const EdgeInsets.only(bottom: 20),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          _buildTrustBlock(l, c, revealed: true),
+          const SizedBox(height: 14),
           Text(l.requestContactRevealedTitle,
               style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900, color: c.textPrimary)),
           const SizedBox(height: 10),
@@ -250,11 +256,11 @@ class _CapacityDetailScreenState
       );
     }
 
-    // ── Anonymous — trust signals (no identity) + request status. ──
+    // ── Not yet revealed — trust signals (no identity) + request status. ──
     return Padding(
       padding: const EdgeInsets.only(bottom: 20),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        _buildTrustBlock(l, c),
+        _buildTrustBlock(l, c, revealed: false),
         if (req != null && req.status != 'granted') ...[
           const SizedBox(height: 14),
           _buildRequestStatus(l, c, req),
@@ -263,10 +269,12 @@ class _CapacityDetailScreenState
     );
   }
 
-  /// Trust WITHOUT identity — verification, aggregate rating, district, and
-  /// trade/crew, all read from the public post. Builds confidence but names no
-  /// one; the company name is revealed only after the poster accepts (note).
-  Widget _buildTrustBlock(AppLocalizations l, dynamic c) {
+  /// Trust signals — verification, aggregate rating, district, and
+  /// trade/crew, all read from the public post. Shown BOTH before and after
+  /// reveal (same widget, `revealed` only toggles the trailing lock note) —
+  /// these signals stay relevant even once contact is visible, they don't
+  /// become obsolete just because the request was accepted.
+  Widget _buildTrustBlock(AppLocalizations l, dynamic c, {required bool revealed}) {
     final capacity = widget.capacity;
     final ratingText = capacity.posterRatingCount > 0
         ? l.trustRatingSummary(
@@ -321,15 +329,29 @@ class _CapacityDetailScreenState
               label:
                   '${l.dayRateBandTrustLabel}: ${l.dayRateBandName(capacity.dayRateBand)}'),
         ],
-        const SizedBox(height: 12),
-        Container(height: 1, color: c.border),
-        const SizedBox(height: 12),
-        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Icon(Icons.lock_outline, size: 14, color: c.textTertiary),
-          const SizedBox(width: 8),
-          Expanded(child: Text(l.trustIdentityHiddenNote,
-              style: TextStyle(fontSize: 12, color: c.textTertiary, height: 1.4))),
-        ]),
+        // Once revealed there's nothing left to unlock, so the lock note
+        // (and its divider) drops out entirely rather than showing stale
+        // "still hidden" copy underneath contact info that's already visible.
+        if (!revealed) ...[
+          const SizedBox(height: 12),
+          Container(height: 1, color: c.border),
+          const SizedBox(height: 12),
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Icon(Icons.lock_outline, size: 14, color: c.textTertiary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                // anonymous: name really is hidden too. visible/discreet: the
+                // name is already shown elsewhere on this screen, so the note
+                // must only talk about contact/chat, not claim the name is hidden.
+                capacity.visibilityMode == CapacityVisibilityMode.anonymous
+                    ? l.trustIdentityHiddenNote
+                    : l.trustContactPendingNote,
+                style: TextStyle(fontSize: 12, color: c.textTertiary, height: 1.4),
+              ),
+            ),
+          ]),
+        ],
       ]),
     );
   }

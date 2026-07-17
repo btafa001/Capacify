@@ -1422,9 +1422,19 @@ class AppLocalizations {
   String trustRatingSummary(String avg, int count) =>
       _t('$avg · $count Bewertungen', '$avg · $count reviews');
   String get trustNoRatingsYet    => _t('Noch keine Bewertungen', 'No reviews yet');
+  // Anonymous posts only (name genuinely hidden). Was worded around an
+  // instant paid "Vermittlung" unlock that no longer has a live UI path — the
+  // real, current flow is the free message below, so the copy now says that
+  // instead of promising something the app can't actually do anymore.
   String get trustIdentityHiddenNote => _t(
-      'Der Firmenname ist ausgeblendet. Mit einer Vermittlung schalten Sie Firma, Kontakt und Chat sofort frei.',
-      'The company name is hidden. One connection instantly unlocks the company, contact and chat.');
+      'Der Firmenname ist ausgeblendet. Senden Sie eine Nachricht – nimmt die Firma an, werden Firmenname, Kontakt und Chat freigeschaltet.',
+      'The company name is hidden. Send a message — once the company accepts, the name, contact, and chat unlock.');
+  // visible/discreet posts: the name is ALREADY shown elsewhere on this same
+  // screen, so this must not claim it's hidden — only contact/chat are still
+  // gated behind acceptance, same as for anonymous posts.
+  String get trustContactPendingNote => _t(
+      'Kontakt und Chat werden freigeschaltet, sobald die Firma Ihre Nachricht annimmt.',
+      'Contact details and chat unlock once the company accepts your message.');
   String get anonExplainerBannerBody => _t(
       'Firmennamen sind anonymisiert. Senden Sie eine Nachricht — sobald die Firma antwortet, sehen Sie Name, Kontakt und Chat.',
       'Company names are anonymized. Send a message — once the company replies, you\'ll see their name, contact, and chat.');
