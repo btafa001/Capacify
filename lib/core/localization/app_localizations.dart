@@ -865,6 +865,10 @@ class AppLocalizations {
     'e.g. "Aerial platform license, Class B driver\'s license"',
   );
   String get dayRateBandLabel => _t('Tagessatz (optional)', 'Day rate (optional)');
+  // Short form (no "(optional)") for read-only display — e.g. prefixed onto
+  // the band value in the trust block, where a bare "800€+" gave no
+  // indication of what the number even was (day rate, total budget, hourly?).
+  String get dayRateBandTrustLabel => _t('Tagessatz', 'Day rate');
   String get dayRateBandUndisclosed => _t('Nicht angeben', 'Prefer not to say');
   String dayRateBandName(String band) {
     switch (band) {

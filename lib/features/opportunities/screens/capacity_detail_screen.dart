@@ -311,10 +311,15 @@ class _CapacityDetailScreenState
         ],
         if (capacity.dayRateBand.isNotEmpty) ...[
           const SizedBox(height: 10),
+          // Prefixed with "Tagessatz" — the bare band value ("800€+") gave no
+          // indication of what the number was (day rate vs. total budget vs.
+          // hourly), since this row otherwise looks just like the plain
+          // location/trade rows above it.
           _TrustRow(
               icon: Icons.euro_outlined,
               color: c.textSecondary,
-              label: l.dayRateBandName(capacity.dayRateBand)),
+              label:
+                  '${l.dayRateBandTrustLabel}: ${l.dayRateBandName(capacity.dayRateBand)}'),
         ],
         const SizedBox(height: 12),
         Container(height: 1, color: c.border),
