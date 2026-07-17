@@ -304,9 +304,13 @@ class CompanyDetailScreen extends ConsumerWidget {
 
               const SizedBox(height: 16),
 
-              // Rating bar
+              // Rating bar — padding matches the hero card and _DetailSection
+              // (About/Kontakt/etc.) below: those use 32/24px all around, this
+              // used to use a tighter 20/14px symmetric pad, so it read as a
+              // visibly smaller/cramped frame next to its siblings despite
+              // sharing the same border+radius+color decoration.
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                padding: const EdgeInsets.all(24),
                 decoration: BoxDecoration(
                   color: c.surface,
                   borderRadius: BorderRadius.circular(12),
