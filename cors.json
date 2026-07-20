@@ -1,0 +1,14 @@
+[
+  {
+    "origin": [
+      "https://capacify.de",
+      "https://www.capacify.de",
+      "https://capacify-mvp.web.app",
+      "https://capacify-mvp.firebaseapp.com",
+      "http://localhost:8877"
+    ],
+    "method": ["GET", "HEAD"],
+    "responseHeader": ["Content-Type"],
+    "maxAgeSeconds": 3600
+  }
+]

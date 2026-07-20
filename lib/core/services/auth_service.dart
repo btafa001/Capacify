@@ -91,6 +91,15 @@ class AuthService {
           // the whole signup if a future UI change ever passed one through
           // with the old vatNumber.isNotEmpty-derived value.
           'verificationStatus': 'none',
+          // Must match request.auth.token.email_verified (firestore.rules) —
+          // true immediately for a provider that pre-verifies (not reachable
+          // via this email/password path, but mirrors the OAuth create path
+          // in company_profile_screen.dart), false for every fresh
+          // email/password signup until the owner clicks the verification
+          // link (see markEmailVerified / email_verification_banner.dart).
+          // Directory listing is gated on this — see H3 fix notes on
+          // CompanyModel.isDirectoryEligible.
+          'emailVerified': credential.user!.emailVerified,
           'ratingSum': 0,
           'ratingCount': 0,
           'contentFlagged': false,
@@ -349,12 +358,28 @@ class AuthService {
   /// when the token was last issued, not the live state. Called by the
   /// verification banner's "I've verified" button after the user clicks the
   /// link in another tab and comes back.
+  ///
+  /// Also persists the flip onto companies/{uid}.emailVerified — the gate the
+  /// public directory listing checks (see CompanyModel.isDirectoryEligible) —
+  /// the moment it's actually true. getIdToken(true) above runs first so the
+  /// fresh 'verified' claim is already on the token this write carries;
+  /// firestore.rules independently re-checks that claim before accepting it,
+  /// so this can't be forged by calling it early. Best-effort/silently
+  /// ignored, same as touchLastActive: a user without a company doc yet (or
+  /// an offline blip) shouldn't fail the refresh the banner is showing.
   Future<bool> reloadAndCheckEmailVerified() async {
     final user = _auth.currentUser;
     if (user == null) return false;
     await user.reload();
     await _auth.currentUser?.getIdToken(true);
-    return _auth.currentUser?.emailVerified ?? false;
+    final verified = _auth.currentUser?.emailVerified ?? false;
+    if (verified) {
+      _firestore
+          .collection('companies')
+          .doc(user.uid)
+          .update({'emailVerified': true}).catchError((_) {});
+    }
+    return verified;
   }
 
   Future<void> signOut() async {
@@ -382,7 +407,7 @@ class AuthService {
       // Social sign-in (Google/Apple) — surface the real cause so config issues
       // are diagnosable instead of a generic error.
       case 'operation-not-allowed':
-        return 'Diese Anmeldeart ist nicht aktiviert. (Google in der Firebase-Konsole freischalten.)';
+        return 'Diese Anmeldeart ist nicht aktiviert. (Den Anbieter in der Firebase-Konsole unter Authentication → Sign-in method freischalten.)';
       case 'unauthorized-domain':
         return 'Diese Domain ist nicht für die Anmeldung freigegeben. (In Firebase Auth → Authorized domains hinzufügen.)';
       case 'popup-blocked':

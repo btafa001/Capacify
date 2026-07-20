@@ -41,6 +41,25 @@ const String kAppCheckRecaptchaSiteKey = '6Lem2FUtAAAAAAKuVNafvIZWj7fQsdJdxxJe0Z
 // → Web Push certificates (2026-07-10).
 const String kFcmVapidKey = 'BOeNM4nx46oJBq5fouSIjdYgb7r1b6Hev4zqY1gPIrhq8qUyHRsGP4BvUFfA55xxbHItphwmvVpFw8C9dyIISl8';
 
+// ── Sign in with Apple ──────────────────────────────────────────────────────
+// Hides the "Weiter mit Apple" button on both auth screens. The Dart side is
+// COMPLETE and deliberately left in place (AuthService.signInWithApple, both
+// screens' handlers, the localized label) — only the button is hidden.
+//
+// Off because the Apple provider is not enabled in Firebase Auth, so every tap
+// returned 'operation-not-allowed' ("Diese Anmeldeart ist nicht aktiviert") —
+// a visible dead end for exactly the iPhone users most likely to try it.
+// Enabling it in the console requires a Services ID and a private key that
+// only exist inside a PAID Apple Developer Program membership (99 €/yr), which
+// we don't have yet (2026-07-20). Note this is optional for us: Apple's rule
+// forcing Sign in with Apple alongside other social logins applies to App
+// Store apps, and Capacify ships as Flutter web on Firebase Hosting (see
+// firebase.json — a web app is the only platform registered).
+//
+// To re-enable after enrolling: turn on Authentication → Sign-in method →
+// Apple in the Firebase Console, then flip this to true. No other code change.
+const bool kAppleSignInEnabled = false;
+
 const List<String> kTrades = [
   'Rohbau',
   'Trockenbau',

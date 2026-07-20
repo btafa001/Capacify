@@ -3,22 +3,32 @@ import '../../core/theme/app_theme.dart';
 
 /// A company logo avatar that degrades to initials on ANY load failure.
 ///
-/// Renders the logo through an HTML `<img>` element (Image.network with
-/// `webHtmlElementStrategy`) rather than CircleAvatar's backgroundImage. Reason:
-/// on Flutter Web the CanvasKit renderer decodes a network image into a WebGL
-/// texture, which browsers forbid for a CROSS-ORIGIN image that arrives without
-/// `Access-Control-Allow-Origin`. Firebase Storage's own download URLs
-/// (firebasestorage.googleapis.com/...&token=) serve the bytes fine but send NO
-/// CORS header for the new-format `.firebasestorage.app` bucket, so every logo
-/// failed to texture and fell back to initials. A plain `<img>` has no such
-/// restriction — the browser displays cross-origin images, only blocking
-/// pixel-readback — so this path shows the logo without any bucket CORS config.
+/// Renders as an ordinary canvas-drawn `Image.network`, hard-bounded by a fixed
+/// SizedBox + ClipOval so it can never paint at its native size and overflow
+/// (an old failure mode of a bare Image.network here).
 ///
-/// `WebHtmlElementStrategy.prefer` uses the `<img>` directly instead of first
-/// attempting (and failing) the CanvasKit fetch, avoiding a wasted request per
-/// logo. The image is hard-bounded by a fixed SizedBox + ClipOval so it can
-/// never render at its native size and overflow (an old failure mode of a bare
-/// Image.network here). On mobile/desktop this strategy is simply ignored.
+/// This widget previously forced an HTML `<img>` via
+/// `webHtmlElementStrategy: WebHtmlElementStrategy.prefer`, because Flutter
+/// Web's CanvasKit renderer decodes a network image into a WebGL texture, which
+/// browsers forbid for a CROSS-ORIGIN image arriving without
+/// `Access-Control-Allow-Origin` — and the Storage download URLs
+/// (firebasestorage.googleapis.com/...&token=) served the bytes with no CORS
+/// header, so every logo failed to texture and fell back to initials.
+///
+/// That was fixed at the source on 2026-07-20 by setting CORS on the bucket
+/// (`gsutil cors set cors.json gs://capacify-mvp.firebasestorage.app`; the
+/// config lives in cors.json at the repo root). Verified: the download URLs now
+/// return `Access-Control-Allow-Origin` for the allowlisted origins and nothing
+/// for anything else. So the `<img>` workaround is gone, and with it the
+/// scroll-time jitter it caused — an `<img>` is a browser-composited layer
+/// positioned via CSS on a different pipeline than Flutter's canvas, so it
+/// lagged a frame behind its card while a list moved. A canvas-drawn image
+/// moves in perfect lockstep instead.
+///
+/// If logos ever regress to initials on web, check the bucket's CORS config
+/// FIRST (`gsutil cors get gs://capacify-mvp.firebasestorage.app`) — and note
+/// that a NEW serving origin must be added to cors.json, or its logos break
+/// while every existing origin keeps working.
 class CompanyLogoAvatar extends StatelessWidget {
   final String logoUrl;
   final String companyName;
@@ -48,23 +58,36 @@ class CompanyLogoAvatar extends StatelessWidget {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _photo() {
     final size = radius * 2;
-    final Widget content = logoUrl.isEmpty
+    return logoUrl.isEmpty
         ? _initials()
         : Image.network(
             logoUrl,
             width: size,
             height: size,
             fit: BoxFit.cover,
-            webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
             errorBuilder: (_, __, ___) => _initials(),
           );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = radius * 2;
+    // The photo stays mounted at all times, including mid-scroll.
+    //
+    // Do NOT reintroduce the "hide the logo while an ancestor is scrolling"
+    // trick (swapping in a canvas placeholder gated on
+    // Scrollable.position.isScrollingNotifier). It targeted the old <img>
+    // pipeline lag described in the class doc, but the cure was far worse on
+    // touch: isScrollingNotifier stays true for the WHOLE drag, so merely
+    // holding a finger on the Unternehmen list blanked every logo on screen
+    // until release. The lag it worked around no longer exists anyway now
+    // that the logo is canvas-drawn.
     return SizedBox(
       width: size,
       height: size,
-      child: ClipOval(child: content),
+      child: ClipOval(child: _photo()),
     );
   }
 }

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../core/services/auth_provider.dart';
 import '../../../core/services/form_draft_service.dart';
 import '../../../core/utils/validators.dart';
@@ -246,6 +247,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
           elevation: 0,
           leading: IconButton(
             icon: Icon(Icons.arrow_back, color: c.textPrimary),
+            tooltip: MaterialLocalizations.of(context).backButtonTooltip,
             onPressed: () => Navigator.pop(context),
           ),
         ),
@@ -375,6 +377,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                             obscureText: _obscurePassword,
                             suffixIcon: IconButton(
                               icon: Icon(_obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined, color: c.textSecondary),
+                              tooltip: _obscurePassword ? l.showPasswordTooltip : l.hidePasswordTooltip,
                               onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                             ),
                             validator: (v) {
@@ -495,13 +498,18 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                             label: l.continueWithGoogle,
                             onTap: _isLoading ? null : _signUpWithGoogle,
                           ),
-                          SizedBox(height: isWide ? 12 : 8),
-
-                          _SocialButton(
-                            icon: FaIcon(FontAwesomeIcons.apple, size: 18, color: c.textPrimary),
-                            label: l.continueWithApple,
-                            onTap: _isLoading ? null : _signUpWithApple,
-                          ),
+                          // ── Apple ── (hidden until the provider is enabled
+                          // in Firebase — see kAppleSignInEnabled. The leading
+                          // spacer is inside the guard so Google isn't left
+                          // with a dangling gap beneath it.)
+                          if (kAppleSignInEnabled) ...[
+                            SizedBox(height: isWide ? 12 : 8),
+                            _SocialButton(
+                              icon: FaIcon(FontAwesomeIcons.apple, size: 18, color: c.textPrimary),
+                              label: l.continueWithApple,
+                              onTap: _isLoading ? null : _signUpWithApple,
+                            ),
+                          ],
                           SizedBox(height: isWide ? 24 : 14),
 
                           // ── Disclaimer ──
