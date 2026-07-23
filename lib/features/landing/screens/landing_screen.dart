@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
+import 'package:go_router/go_router.dart';
+import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/services/capacity_provider.dart';
 import '../../../core/constants/app_constants.dart';
@@ -12,13 +13,7 @@ import '../../../shared/widgets/language_switcher.dart';
 import '../../../shared/widgets/theme_switcher.dart';
 import '../../../shared/widgets/dot_grid_painter.dart';
 import '../../../shared/widgets/interactions.dart';
-import '../../auth/screens/login_screen.dart';
-import '../../auth/screens/register_screen.dart';
-import '../../legal/screens/agb_screen.dart';
-import '../../legal/screens/datenschutz_screen.dart';
-import '../../legal/screens/impressum_screen.dart';
 import '../../../shared/widgets/capacify_logo.dart';
-import 'about_screen.dart';
 import '../../../core/services/analytics_service.dart';
 
 class LandingScreen extends StatefulWidget {
@@ -44,9 +39,12 @@ class _LandingScreenState extends State<LandingScreen>
     super.dispose();
   }
 
-  void _toLogin()    => Navigator.push(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
-  void _toRegister() => Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterScreen()));
-  void _toAbout()    => Navigator.push(context, MaterialPageRoute(builder: (_) => const AboutScreen()));
+  // context.push, not Navigator.push: these are real URLs now (/login,
+  // /registrieren, /ueber-uns) - bookmarkable and indexable - and they still
+  // pop back here, since go_router pushes onto the same Navigator.
+  void _toLogin()    => context.push(Routes.login);
+  void _toRegister() => context.push(Routes.register);
+  void _toAbout()    => context.push(Routes.about);
 
   @override
   Widget build(BuildContext context) {
@@ -84,8 +82,8 @@ class _NavBar extends StatefulWidget {
 }
 
 class _NavBarState extends State<_NavBar> {
-  bool _hoverLogin = false;
-  bool _hoverAbout = false;
+  // Hover state now lives inside each HoverTextLink, so the nav bar no longer
+  // tracks it here.
 
   @override
   Widget build(BuildContext context) {
@@ -122,25 +120,17 @@ class _NavBarState extends State<_NavBar> {
             const SizedBox(width: 12),
             const ThemeSwitcher(),
             const SizedBox(width: 24),
-            MouseRegion(
-              cursor: SystemMouseCursors.click,
-              onEnter: (_) => setState(() => _hoverAbout = true),
-              onExit:  (_) => setState(() => _hoverAbout = false),
-              child: GestureDetector(
-                onTap: widget.onAbout,
-                child: Text(l.navAbout, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: _hoverAbout ? AppColors.primary : c.textSecondary)),
-              ),
+            HoverTextLink(
+              label: l.navAbout,
+              onTap: widget.onAbout,
+              style: (context, active) => TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: active ? AppColors.primary : c.textSecondary),
             ),
             const SizedBox(width: 32),
           ],
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            onEnter: (_) => setState(() => _hoverLogin = true),
-            onExit:  (_) => setState(() => _hoverLogin = false),
-            child: GestureDetector(
-              onTap: widget.onLogin,
-              child: Text(l.navLogin, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: _hoverLogin ? AppColors.primary : c.textSecondary)),
-            ),
+          HoverTextLink(
+            label: l.navLogin,
+            onTap: widget.onLogin,
+            style: (context, active) => TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: active ? AppColors.primary : c.textSecondary),
           ),
           SizedBox(width: widget.isMobile ? 10 : 16),
           _GradientBtn(
@@ -213,7 +203,7 @@ class _DesktopHero extends StatelessWidget {
                   // Tighter tracking (matches the loading-splash wordmark) for a
                   // punchier display feel; the trailing "?" picks up the orange
                   // accent, echoing the splash's orange dot.
-                  style: GoogleFonts.archivo(fontSize: 66, fontWeight: FontWeight.w900, color: c.textPrimary, height: 1.05, letterSpacing: -1.8),
+                  style: TextStyle(fontFamily: 'Archivo', fontSize: 66, fontWeight: FontWeight.w900, color: c.textPrimary, height: 1.05, letterSpacing: -1.8),
                   children: [
                     TextSpan(text: l.heroTitle),
                     TextSpan(text: l.heroHighlight, style: const TextStyle(color: AppColors.primary)),
@@ -325,7 +315,7 @@ class _MobileHero extends StatelessWidget {
         const SizedBox(height: 22),
         RichText(
           text: TextSpan(
-            style: GoogleFonts.archivo(fontSize: 40, fontWeight: FontWeight.w900, color: c.textPrimary, height: 1.08, letterSpacing: -1.1),
+            style: TextStyle(fontFamily: 'Archivo', fontSize: 40, fontWeight: FontWeight.w900, color: c.textPrimary, height: 1.08, letterSpacing: -1.1),
             children: [
               TextSpan(text: l.heroTitle),
               TextSpan(text: l.heroHighlight, style: const TextStyle(color: AppColors.primary)),
@@ -1696,9 +1686,9 @@ class _FooterSection extends StatelessWidget {
                         const SizedBox(height: 8),
                         Wrap(spacing: 28, runSpacing: 6, children: [
                           _FLink(label: l.footerContact, onTap: _launchFooterContactEmail),
-                          _FLink(label: l.footerAGB,     page: const AGBScreen()),
-                          _FLink(label: l.footerPrivacy, page: const DatenschutzScreen()),
-                          _FLink(label: l.footerImprint, page: const ImpressumScreen()),
+                          _FLink(label: l.footerAGB,     route: Routes.agb),
+                          _FLink(label: l.footerPrivacy, route: Routes.privacy),
+                          _FLink(label: l.footerImprint, route: Routes.imprint),
                         ]),
                       ])
                     : Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
@@ -1709,9 +1699,9 @@ class _FooterSection extends StatelessWidget {
                         ]),
                         const Spacer(),
                         _FLink(label: l.footerContact, onTap: _launchFooterContactEmail), const SizedBox(width: 32),
-                        _FLink(label: l.footerAGB,     page: const AGBScreen()),     const SizedBox(width: 32),
-                        _FLink(label: l.footerPrivacy, page: const DatenschutzScreen()), const SizedBox(width: 32),
-                        _FLink(label: l.footerImprint, page: const ImpressumScreen()),
+                        _FLink(label: l.footerAGB,     route: Routes.agb),     const SizedBox(width: 32),
+                        _FLink(label: l.footerPrivacy, route: Routes.privacy), const SizedBox(width: 32),
+                        _FLink(label: l.footerImprint, route: Routes.imprint),
                       ]),
               ),
             ),
@@ -1744,30 +1734,27 @@ Future<void> _launchFooterContactEmail() async {
 
 class _FLink extends StatefulWidget {
   final String label;
-  final Widget? page;
+  /// Route path (see Routes) rather than a widget - a footer legal link is
+  /// exactly the kind of thing people copy out of the page.
+  final String? route;
   final VoidCallback? onTap;
-  const _FLink({required this.label, this.page, this.onTap});
+  const _FLink({required this.label, this.route, this.onTap});
   @override
   State<_FLink> createState() => _FLinkState();
 }
 
 class _FLinkState extends State<_FLink> {
-  bool _h = false;
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _h = true),
-      onExit:  (_) => setState(() => _h = false),
-      child: GestureDetector(
-        onTap: widget.onTap ??
-            () => Navigator.push(context, MaterialPageRoute(builder: (_) => widget.page!)),
-        child: AnimatedDefaultTextStyle(
-          duration: const Duration(milliseconds: 180),
-          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: _h ? AppColors.primary : c.textSecondary),
-          child: Text(widget.label),
-        ),
+    return HoverTextLink(
+      label: widget.label,
+      onTap: widget.onTap ?? () => context.push(widget.route!),
+      animate: const Duration(milliseconds: 180),
+      style: (context, active) => TextStyle(
+        fontSize: 13,
+        fontWeight: FontWeight.w500,
+        color: active ? AppColors.primary : c.textSecondary,
       ),
     );
   }

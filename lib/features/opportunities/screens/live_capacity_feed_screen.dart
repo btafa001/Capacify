@@ -269,6 +269,7 @@ class _LiveCapacityFeedScreenState
                   suffixIcon: _searchText.isNotEmpty
                       ? IconButton(
                           icon: Icon(Icons.close, color: c.textSecondary, size: 18),
+                          tooltip: l.clearSearchTooltip,
                           onPressed: () {
                             _searchController.clear();
                             _setFilter(() => _searchText = '');
@@ -379,6 +380,17 @@ class _LiveCapacityFeedScreenState
                     color: AppColors.primary,
                     onRefresh: () async => ref.refresh(capacitiesProvider),
                     child: ListView.builder(
+                      // Clamping (not the platform-default bouncing) physics: the
+                      // rubber-band overscroll animation that BouncingScrollPhysics
+                      // drives during the pull-to-refresh drag runs on a different
+                      // frame pipeline than the HTML <img> logos inside each card
+                      // (see CompanyLogoAvatar) render on, so during that animation
+                      // the logo visibly lags a frame behind the card. Clamping stops
+                      // the list at the boundary instead of overscrolling it, which
+                      // removes the animation window entirely — RefreshIndicator's own
+                      // spinner still drives the pull gesture independent of physics.
+                      physics: const AlwaysScrollableScrollPhysics(
+                          parent: ClampingScrollPhysics()),
                       padding: const EdgeInsets.only(top: 16, bottom: 80),
                       itemCount: visible.length + (hasMore ? 1 : 0),
                       itemBuilder: (context, index) {
@@ -500,6 +512,7 @@ class _AnonymizationExplainerBannerState extends State<_AnonymizationExplainerBa
         IconButton(
           onPressed: _dismiss,
           icon: Icon(Icons.close_rounded, size: 18, color: c.textTertiary),
+          tooltip: l.dismissTooltip,
           splashRadius: 16,
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
@@ -771,7 +784,10 @@ class _LiveCapacityCard extends ConsumerWidget {
   void _showShareSheet(BuildContext context) {
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
-    final shareUrl = 'https://capacify-mvp.web.app/?capacity=${capacity.id}';
+    // A real path now (Routes.capacity), not a query parameter. The old
+    // ?capacity= form is still redirected to it, so links already sent out
+    // keep working - see app_router.dart's redirect.
+    final shareUrl = 'https://capacify-mvp.web.app/kapazitaet/${capacity.id}';
     final text =
         '${capacity.typeLabel(l)}: ${capacity.autoTitle(l)}\n'
         '📍 ${capacity.location} · ${capacity.availabilityLabel(l)}\n'
@@ -1137,7 +1153,7 @@ class _LiveCapacityCard extends ConsumerWidget {
                                     Text(capacity.posterRating.toStringAsFixed(1),
                                         style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800, color: c.textPrimary)),
                                     const SizedBox(width: 3),
-                                    Text('(${capacity.posterRatingCount})',
+                                    Text('(${capacity.posterRatingCountDisplay})',
                                         style: TextStyle(fontSize: 12, color: c.textTertiary)),
                                   ],
                                   if ((capacity.posterVerified || capacity.posterRatingCount > 0) && capacity.posterAvgResponseHours != null) ...[
@@ -1669,10 +1685,13 @@ class _SavedChip extends StatelessWidget {
           Text(label,
               style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: AppColors.primary)),
           const SizedBox(width: 4),
-          InkWell(
-            onTap: onDelete,
-            borderRadius: BorderRadius.circular(12),
-            child: Icon(Icons.close, size: 14, color: c.textTertiary),
+          Tooltip(
+            message: AppLocalizations.of(context).removeSavedSearchTooltip,
+            child: InkWell(
+              onTap: onDelete,
+              borderRadius: BorderRadius.circular(12),
+              child: Icon(Icons.close, size: 14, color: c.textTertiary),
+            ),
           ),
         ]),
       ),

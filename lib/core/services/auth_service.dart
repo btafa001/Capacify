@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import '../constants/app_constants.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -56,28 +57,43 @@ class AuthService {
         'lastName': lastName,
         // Tier flag for the gated-contact model — dormant; default free.
         'plan': 'free',
+        // The consent checkbox on the registration form is validated before
+        // this call is ever made, so acceptance is a fact by the time the doc
+        // is written — record it rather than letting it evaporate with the
+        // widget state (see recordLegalConsent, which the OAuth path uses).
+        'legalAcceptedAt': FieldValue.serverTimestamp(),
+        'legalVersion': kLegalTermsVersion,
         'createdAt': FieldValue.serverTimestamp(),
       });
 
-      // Auto-create company if name provided
+      // Auto-create company if name provided. Two documents, one batch: the
+      // public profile and the gated companyContacts sidecar. Contact data
+      // must never be written onto the public doc — it is world-readable so
+      // anonymous visitors can browse the directory (see firestore.rules and
+      // CompanyModel's class doc).
       if (companyName.isNotEmpty) {
-        await _firestore
-            .collection('companies')
-            .doc(credential.user!.uid)
-            .set({
+        final uid = credential.user!.uid;
+        final batch = _firestore.batch();
+        batch.set(_firestore.collection('companyContacts').doc(uid), {
+          'email': companyEmail.isNotEmpty ? companyEmail : email,
+          'phone': phone,
+          'address': address,
+          'postalCode': postalCode,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+        batch.set(_firestore.collection('companies').doc(uid), {
           'ownerId': credential.user!.uid,
           'administrators': [credential.user!.uid],
           'name': companyName,
           'trades': trades,
           'city': city,
-          'phone': phone,
           'website': website,
-          'email': companyEmail.isNotEmpty
-              ? companyEmail
-              : email,
           'description': '',
-          'address': address,
-          'postalCode': postalCode,
+          // A fresh signup has no description yet, so it is never
+          // directory-complete at this point — but write the flag explicitly
+          // rather than leaving the key absent, or CompanyModel.fromFirestore
+          // treats the doc as predating the contact split.
+          'profileComplete': false,
           'country': 'Deutschland',
           'employees': employees,
           'services': [],
@@ -103,9 +119,10 @@ class AuthService {
           'ratingSum': 0,
           'ratingCount': 0,
           'contentFlagged': false,
-          'referredBy': _referrerFromUrl(excludeUid: credential.user!.uid),
+          'referredBy': referrerFromUrl(excludeUid: credential.user!.uid),
           'createdAt': FieldValue.serverTimestamp(),
         });
+        await batch.commit();
       }
 
       return credential;
@@ -114,12 +131,36 @@ class AuthService {
     }
   }
 
+  /// Records that this user accepted the AGB + Datenschutzerklärung, and which
+  /// revision of them (kLegalTermsVersion).
+  ///
+  /// The email registration form has always had a consent checkbox, but it
+  /// only ever gated the button — nothing was persisted, so there was no way
+  /// to show later WHO accepted WHAT and WHEN. The OAuth path (see
+  /// CompanyOnboardingScreen) had no checkbox at all. Both now land here.
+  ///
+  /// Best-effort by design: a failed consent stamp must not fail a signup that
+  /// otherwise succeeded — the account would be left half-created, which is
+  /// strictly worse than a missing timestamp we can re-collect.
+  Future<void> recordLegalConsent(String uid) async {
+    try {
+      await _firestore.collection('users').doc(uid).set({
+        'legalAcceptedAt': FieldValue.serverTimestamp(),
+        'legalVersion': kLegalTermsVersion,
+      }, SetOptions(merge: true));
+    } catch (_) {}
+  }
+
   /// Reads ?ref={companyId} off the current page URL — the invite link's
   /// referral attribution (see invite_dialog.dart, which builds that link).
   /// Excludes self-referral (shouldn't be reachable normally, since the
   /// referrer's id was minted before this new account existed, but cheap to
   /// guard directly). Best-effort: any malformed/missing param → ''.
-  String _referrerFromUrl({required String excludeUid}) {
+  ///
+  /// Public because the OAuth signup path builds its company doc in
+  /// CompanyOnboardingScreen rather than in registerWithEmail, and referral
+  /// attribution has to work identically for both.
+  String referrerFromUrl({required String excludeUid}) {
     try {
       final ref = Uri.base.queryParameters['ref'];
       if (ref == null || ref.isEmpty || ref == excludeUid) return '';

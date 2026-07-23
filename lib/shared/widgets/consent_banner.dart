@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:go_router/go_router.dart';
+import '../../core/router/app_router.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/localization/app_localizations.dart';
 import '../../core/services/consent_provider.dart';
-import '../../features/legal/screens/datenschutz_screen.dart';
 
 /// GDPR/TTDSG cookie-consent bar. Shown only while the choice is undecided,
 /// pinned to the bottom above all content. "Ablehnen" is presented with equal
@@ -45,8 +46,7 @@ class _ConsentBar extends ConsumerWidget {
           WidgetSpan(
             alignment: PlaceholderAlignment.middle,
             child: InkWell(
-              onTap: () => Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => const DatenschutzScreen())),
+              onTap: () => context.push(Routes.privacy),
               child: Text(l.consentLearnMore,
                   style: const TextStyle(
                       color: AppColors.primaryDark,

@@ -240,13 +240,16 @@ Future<void> showInterestModal({
                       children: [
                         Align(
                           alignment: Alignment.topRight,
-                          child: InkWell(
-                            onTap: () => Navigator.pop(ctx),
-                            borderRadius: BorderRadius.circular(20),
-                            child: Padding(
-                              padding: const EdgeInsets.all(2),
-                              child: Icon(Icons.close,
-                                  size: 20, color: c.textTertiary),
+                          child: Tooltip(
+                            message: l.closeTooltip,
+                            child: InkWell(
+                              onTap: () => Navigator.pop(ctx),
+                              borderRadius: BorderRadius.circular(20),
+                              child: Padding(
+                                padding: const EdgeInsets.all(2),
+                                child: Icon(Icons.close,
+                                    size: 20, color: c.textTertiary),
+                              ),
                             ),
                           ),
                         ),

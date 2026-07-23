@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/services/auth_provider.dart';
 import '../../../core/services/company_provider.dart';
@@ -35,7 +37,12 @@ import '../../../shared/widgets/email_verification_banner.dart';
 import '../../../core/services/analytics_service.dart';
 
 class DashboardScreen extends ConsumerStatefulWidget {
-  const DashboardScreen({super.key});
+  const DashboardScreen({super.key, this.section = AppSection.feed});
+
+  /// The section the URL asked for (`/app/favoriten` → favorites). The route is
+  /// the source of truth on desktop, which is what makes refresh, browser back
+  /// and a pasted link all land in the same place.
+  final AppSection section;
 
   @override
   ConsumerState<DashboardScreen> createState() => _DashboardScreenState();
@@ -49,13 +56,25 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   int _feedResetKey = 0;
   // Active section for the desktop app-shell (sidebar stays pinned; content
   // swaps in place, no back button). Mobile keeps drawer + pushed routes.
-  _Section _section = _Section.feed;
+  late _Section _section = widget.section;
 
   @override
   void initState() {
     super.initState();
     AnalyticsService.logScreenView('Dashboard');
     _loadUserData();
+  }
+
+  // The shell is deliberately given one page key for `/app` and `/app/:section`
+  // (see app_router.dart), so a sidebar click reuses this State rather than
+  // remounting the whole dashboard — which means the new section arrives here
+  // as a widget update, not a fresh initState.
+  @override
+  void didUpdateWidget(covariant DashboardScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.section != oldWidget.section && widget.section != _section) {
+      setState(() => _section = widget.section);
+    }
   }
 
   void _refreshLiveFeed() => setState(() => _feedResetKey++);
@@ -95,12 +114,14 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     Navigator.push(context, MaterialPageRoute(builder: (_) => MyCapacitiesScreen(company: company)));
   }
 
-  // Desktop: swap the pinned-shell content. Mobile: close the drawer and push a
-  // full route (a back button is natural on a phone).
+  // Desktop: change the URL and let the route drive the pinned-shell content
+  // (see didUpdateWidget) — that's what makes the section survive a refresh and
+  // respond to browser back. Mobile: close the drawer and push a full route (a
+  // back button is natural on a phone, and a pushed route pops correctly).
   void _navigate(_Section s) {
     final isMobile = MediaQuery.of(context).size.width < 768;
     if (!isMobile) {
-      setState(() => _section = s);
+      context.go(s.location);
       return;
     }
     Navigator.of(context).maybePop(); // close the drawer
@@ -139,7 +160,13 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       case _Section.favorites:
         return FavoritesScreen(embedded: embedded);
       case _Section.admin:
-        return AdminScreen(embedded: embedded);
+        // The sidebar only offers this to admins, but the section is a URL now
+        // (/app/admin) and anyone can type one. Firestore rules make it a wall
+        // of denied reads rather than a leak for a non-admin, but returning
+        // null (→ the feed) is the honest answer. Deliberately not a "no
+        // access" page: the admin area isn't advertised.
+        final isAdmin = ref.watch(isAdminProvider).valueOrNull ?? false;
+        return isAdmin ? AdminScreen(embedded: embedded) : null;
     }
   }
 
@@ -282,8 +309,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   }
 }
 
-// Sections of the desktop app-shell.
-enum _Section { feed, companies, listings, requests, contacts, messages, favorites, admin }
+// Sections of the app-shell. Defined next to the router because each one is a
+// URL now (`/app/favoriten`), not just an in-memory tab index — see AppSection.
+typedef _Section = AppSection;
 
 // ─── SIDEBAR ──────────────────────────────────────────────────────────────────
 
@@ -480,55 +508,33 @@ class _SideBar extends ConsumerWidget {
           // Invite a company — zero-cost liquidity lever (grows the network).
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-            child: GestureDetector(
+            child: _SidebarActionButton(
+              icon: Icons.person_add_alt_1_rounded,
+              label: l.sidebarInvite,
+              accent: AppColors.primary,
               onTap: () => showInviteDialog(context, companyId: uid),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.06),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppColors.primary.withOpacity(0.25)),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.person_add_alt_1_rounded, size: 16, color: AppColors.primary),
-                    const SizedBox(width: 10),
-                    Expanded(child: Text(l.sidebarInvite, style: const TextStyle(fontSize: 13, color: AppColors.primary, fontWeight: FontWeight.w600))),
-                    const Icon(Icons.arrow_forward_ios_rounded, size: 11, color: AppColors.primary),
-                  ],
-                ),
-              ),
             ),
           ),
 
           // Feedback button
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-            child: GestureDetector(
+            child: _SidebarActionButton(
+              icon: Icons.feedback_outlined,
+              label: l.sidebarFeedback,
+              accent: AppColors.primary,
               onTap: () => showDialog(context: context, builder: (_) => const _FeedbackDialog()),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.06),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppColors.primary.withOpacity(0.25)),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.feedback_outlined, size: 16, color: AppColors.primary),
-                    const SizedBox(width: 10),
-                    Expanded(child: Text(l.sidebarFeedback, style: const TextStyle(fontSize: 13, color: AppColors.primary, fontWeight: FontWeight.w600))),
-                    const Icon(Icons.arrow_forward_ios_rounded, size: 11, color: AppColors.primary),
-                  ],
-                ),
-              ),
             ),
           ),
 
           // Logout button
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-            child: GestureDetector(
+            child: _SidebarActionButton(
+              icon: Icons.logout,
+              label: l.menuLogout,
+              accent: AppColors.error,
+              showChevron: false,
               onTap: () async {
                 await ref.read(authServiceProvider).signOut();
                 if (context.mounted) {
@@ -538,21 +544,6 @@ class _SideBar extends ConsumerWidget {
                   );
                 }
               },
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: BoxDecoration(
-                  color: AppColors.error.withOpacity(0.06),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppColors.error.withOpacity(0.25)),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.logout, size: 16, color: AppColors.error),
-                    const SizedBox(width: 10),
-                    Expanded(child: Text(l.menuLogout, style: const TextStyle(fontSize: 13, color: AppColors.error, fontWeight: FontWeight.w600))),
-                  ],
-                ),
-              ),
             ),
           ),
         ],
@@ -676,6 +667,81 @@ class _NavItem extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The three tinted action rows at the foot of the sidebar (invite, feedback,
+/// logout). Previously three copies of a bare [GestureDetector] wrapping a
+/// [Container] — tappable by mouse and by nothing else: no focus node, no
+/// keyboard activation, and nothing telling a screen reader these were
+/// controls rather than decoration. Logging out was unreachable without a
+/// pointer.
+///
+/// [InkWell] supplies the focus node and the Enter/Space handling; the border
+/// swap makes focus *visible*, since the theme's default focus overlay all but
+/// disappears on top of these already-tinted surfaces.
+class _SidebarActionButton extends StatefulWidget {
+  final IconData icon;
+  final String label;
+  final Color accent;
+  final VoidCallback onTap;
+  final bool showChevron;
+
+  const _SidebarActionButton({
+    required this.icon,
+    required this.label,
+    required this.accent,
+    required this.onTap,
+    this.showChevron = true,
+  });
+
+  @override
+  State<_SidebarActionButton> createState() => _SidebarActionButtonState();
+}
+
+class _SidebarActionButtonState extends State<_SidebarActionButton> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    // container + button with no label of its own, matching what
+    // ButtonStyleButton does for every ElevatedButton in the app: the node is
+    // announced as a button and the Text below supplies its name, so the two
+    // can't drift apart or get read out twice.
+    return Semantics(
+      container: true,
+      button: true,
+      child: InkWell(
+        onTap: widget.onTap,
+        onFocusChange: (v) => setState(() => _focused = v),
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: widget.accent.withOpacity(_focused ? 0.12 : 0.06),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: _focused ? widget.accent : widget.accent.withOpacity(0.25),
+              width: _focused ? 2 : 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(widget.icon, size: 16, color: widget.accent),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  widget.label,
+                  style: TextStyle(fontSize: 13, color: widget.accent, fontWeight: FontWeight.w600),
+                ),
+              ),
+              if (widget.showChevron)
+                Icon(Icons.arrow_forward_ios_rounded, size: 11, color: widget.accent),
+            ],
+          ),
         ),
       ),
     );
@@ -905,7 +971,7 @@ class _TopBar extends ConsumerWidget {
         decoration: BoxDecoration(color: c.surface, border: Border(bottom: BorderSide(color: c.border))),
         child: Row(
           children: [
-            IconButton(icon: Icon(Icons.menu, color: c.textPrimary, size: 22), onPressed: () => Scaffold.of(context).openDrawer(), padding: EdgeInsets.zero, constraints: const BoxConstraints()),
+            IconButton(icon: Icon(Icons.menu, color: c.textPrimary, size: 22), tooltip: MaterialLocalizations.of(context).openAppDrawerTooltip, onPressed: () => Scaffold.of(context).openDrawer(), padding: EdgeInsets.zero, constraints: const BoxConstraints()),
             const SizedBox(width: 10),
             CapacifyWordmark(symbolSize: 30, fontSize: 22, textColor: c.textPrimary),
             const SizedBox(width: 6),

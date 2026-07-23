@@ -19,10 +19,24 @@ final companiesProvider = StreamProvider<List<CompanyModel>>((ref) {
 });
 
 // Single company by ID — used for inline rating badges (e.g. on capacity cards)
+// and the detail header. PUBLIC fields only: contact lives in the gated
+// sidecar, so a model from this stream always has empty email/phone/address.
 final companyByIdProvider =
     StreamProvider.family<CompanyModel?, String>((ref, companyId) {
   final service = ref.watch(companyServiceProvider);
   return service.getCompanyStream(companyId);
+});
+
+/// A company's gated contact block, or null when the viewer isn't entitled to
+/// it (signed out, or signed in without a verified email — see the
+/// companyContacts rules). Deliberately a separate, on-demand lookup rather
+/// than part of companyByIdProvider: that stream backs every inline rating
+/// badge in the feed, and joining contact onto it would fire a contact read
+/// per card for data almost none of them display.
+final companyContactProvider =
+    FutureProvider.family<Map<String, dynamic>?, String>((ref, companyId) {
+  final service = ref.watch(companyServiceProvider);
+  return service.getCompanyContact(companyId);
 });
 
 final companyRatingsProvider =

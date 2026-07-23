@@ -12,7 +12,7 @@ import '../../../core/localization/app_localizations.dart';
 import '../../../core/utils/content_moderation.dart';
 import '../../../core/services/analytics_service.dart';
 import '../../../shared/widgets/milestone.dart';
-import '../../../main.dart' show navigatorKey;
+import '../../../core/router/app_router.dart' show rootNavigatorKey;
 
 class CreateCapacityScreen extends ConsumerStatefulWidget {
   final CompanyModel company;
@@ -253,7 +253,7 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
         // Wow moment: first live post. Fire on the root navigator (this screen
         // just popped) so it lands on the feed. Not for flagged/under-review.
         if (!capacity.contentFlagged) {
-          final rootCtx = navigatorKey.currentContext;
+          final rootCtx = rootNavigatorKey.currentContext;
           if (rootCtx != null) {
             Milestone.celebrateOnce(rootCtx,
                 uid: widget.company.id,
@@ -292,6 +292,7 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
             Icons.close,
             color: c.textPrimary,
           ),
+          tooltip: l.closeTooltip,
           onPressed: () => Navigator.pop(context),
         ),
         title: Column(
@@ -691,6 +692,7 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                             color: AppColors.primary,
                             size: 22,
                           ),
+                          tooltip: l.decreaseTeamSizeTooltip,
                         ),
                         SizedBox(
                           width: 60,
@@ -728,6 +730,7 @@ class _CreateCapacityScreenState extends ConsumerState<CreateCapacityScreen> {
                             color: AppColors.primary,
                             size: 22,
                           ),
+                          tooltip: l.increaseTeamSizeTooltip,
                         ),
                       ],
                     ),

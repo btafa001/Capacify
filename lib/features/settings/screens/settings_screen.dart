@@ -1,5 +1,8 @@
+import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/services/auth_provider.dart';
 import '../../../core/services/auth_service.dart';
@@ -7,10 +10,6 @@ import '../../../core/services/seed_service.dart';
 import '../../../core/services/admin_provider.dart';
 import '../../../shared/widgets/capacify_logo.dart';
 import '../../landing/screens/landing_screen.dart';
-import '../../landing/screens/about_screen.dart';
-import '../../legal/screens/agb_screen.dart';
-import '../../legal/screens/datenschutz_screen.dart';
-import '../../legal/screens/impressum_screen.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/services/analytics_service.dart';
 import '../../../core/services/consent_provider.dart';
@@ -183,6 +182,7 @@ class _SettingsScreenState
             Icons.arrow_back,
             color: c.textPrimary,
           ),
+          tooltip: MaterialLocalizations.of(context).backButtonTooltip,
           onPressed: () => Navigator.pop(context),
         ),
         title: Text(
@@ -253,7 +253,7 @@ class _SettingsScreenState
                         onTap: _showChangePasswordDialog,
                       ),
                       _Divider(),
-                      // Referral attribution (see AuthService._referrerFromUrl,
+                      // Referral attribution (see AuthService.referrerFromUrl,
                       // CompanyModel.referredBy) — recognition for bringing
                       // companies in, not a credit/quota bonus: during Early
                       // Access every company already has an effectively
@@ -312,12 +312,7 @@ class _SettingsScreenState
                       children: [
                         InkWell(
                           borderRadius: BorderRadius.circular(8),
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const AboutScreen(),
-                            ),
-                          ),
+                          onTap: () => context.push(Routes.about),
                           child: Row(
                             children: [
                               const CapacifySymbol(size: 40),
@@ -370,8 +365,8 @@ class _SettingsScreenState
                     ),
                   ),
 
-                  // ── DEMO DATA (admins only) ──
-                  if (ref.watch(isAdminProvider).valueOrNull == true) ...[
+                  // ── DEMO DATA (admins only, never in release builds) ──
+                  if (!kReleaseMode && ref.watch(isAdminProvider).valueOrNull == true) ...[
                     SizedBox(height: isMobile ? 16 : 28),
                     _SectionLabel(label: l.developerSection),
                     SizedBox(height: isMobile ? 8 : 10),
@@ -402,24 +397,21 @@ class _SettingsScreenState
                         icon: Icons.security_outlined,
                         title: l.privacyLabel,
                         subtitle: l.gdprSubtitle,
-                        onTap: () => Navigator.push(context,
-                            MaterialPageRoute(builder: (_) => const DatenschutzScreen())),
+                        onTap: () => context.push(Routes.privacy),
                       ),
                       _Divider(),
                       _LinkTile(
                         icon: Icons.description_outlined,
                         title: l.agbLabel,
                         subtitle: l.agbFullName,
-                        onTap: () => Navigator.push(context,
-                            MaterialPageRoute(builder: (_) => const AGBScreen())),
+                        onTap: () => context.push(Routes.agb),
                       ),
                       _Divider(),
                       _LinkTile(
                         icon: Icons.info_outline,
                         title: l.footerImprint,
                         subtitle: l.tmgSubtitle,
-                        onTap: () => Navigator.push(context,
-                            MaterialPageRoute(builder: (_) => const ImpressumScreen())),
+                        onTap: () => context.push(Routes.imprint),
                       ),
                       _Divider(),
                       _LinkTile(
@@ -729,6 +721,9 @@ class _ChangePasswordDialogState extends State<ChangePasswordDialog> {
             color: c.textSecondary,
             size: 18,
           ),
+          tooltip: obscure
+              ? AppLocalizations.of(context).showPasswordTooltip
+              : AppLocalizations.of(context).hidePasswordTooltip,
           onPressed: onToggle,
         ),
       ),
@@ -787,7 +782,7 @@ class _ChangePasswordDialogState extends State<ChangePasswordDialog> {
                 onToggle: () => setState(() => _obscureNew = !_obscureNew),
                 validator: (v) {
                   if (v == null || v.isEmpty) return l.required;
-                  if (v.length < 6) return l.min6CharsError;
+                  if (v.length < 8) return l.min8Chars;
                   return null;
                 },
               ),

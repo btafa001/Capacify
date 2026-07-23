@@ -9,7 +9,11 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class NotificationModel {
   final String id;
   final String recipientId;
-  final String type; // 'new_message' | 'new_contact_request' | 'verification_submitted' | 'content_flagged' | 'rating_submitted'
+  final String type;
+  // Admin fan-out:  'verification_submitted' | 'content_flagged' | 'rating_submitted'
+  // Personal:       'request_accepted' | 'verification_result' | 'rating_approved' |
+  //                 'request_pending_nudge' | 'collab_nudge'
+  // Surfaced elsewhere (not rendered as tiles): 'new_message' | 'new_contact_request'
   final bool read;
   final DateTime? createdAt;
 
@@ -24,16 +28,34 @@ class NotificationModel {
   final String ratingId; // rating_submitted
   final String capacityId; // content_flagged (capacity)
   final String contentType; // content_flagged only: 'capacity' | 'company'
-  final String requestId; // new_contact_request
+  final String requestId; // new_contact_request / request_accepted / request_pending_nudge
+  final String postId; // request_accepted only: opens the chat with full post context
   final bool urgent; // new_contact_request
+  final String outcome; // verification_result only: 'verified' | 'rejected'
+  final int rating; // rating_approved only: 1..5
 
-  // Both new_message and new_contact_request are addressed to a regular
-  // (non-admin) company and already have their own dedicated, real-time
-  // surfacing — the chat's `unread` map, and the Received-Requests screen's
-  // pending-count sidebar badge, respectively — so both are excluded here
-  // the same way, rather than folding into the admin-events bell dropdown
-  // (which every OTHER type is currently addressed only to admin uids for).
-  bool get isAdminEvent => type != 'new_message' && type != 'new_contact_request';
+  // Two disjoint families. Admin events fan out one doc per admin uid; personal
+  // events are addressed to a single regular company and render in the bell for
+  // that recipient. new_message and new_contact_request are in NEITHER set —
+  // they already have dedicated real-time surfacing (the chat's `unread` map and
+  // the Received-Requests pending badge), so the bell shows them there, not as
+  // notification-doc tiles. (Previously isAdminEvent was `type != new_message &&
+  // type != new_contact_request`, which mis-swept collab_nudge — and every future
+  // personal type — into the admin-only bucket.)
+  static const _adminTypes = {
+    'verification_submitted',
+    'content_flagged',
+    'rating_submitted',
+  };
+  static const _personalTypes = {
+    'request_accepted',
+    'verification_result',
+    'rating_approved',
+    'request_pending_nudge',
+    'collab_nudge',
+  };
+  bool get isAdminEvent => _adminTypes.contains(type);
+  bool get isPersonalEvent => _personalTypes.contains(type);
 
   NotificationModel({
     required this.id,
@@ -48,7 +70,10 @@ class NotificationModel {
     this.capacityId = '',
     this.contentType = '',
     this.requestId = '',
+    this.postId = '',
     this.urgent = false,
+    this.outcome = '',
+    this.rating = 0,
   });
 
   factory NotificationModel.fromFirestore(DocumentSnapshot doc) {
@@ -66,7 +91,10 @@ class NotificationModel {
       capacityId: data['capacityId'] ?? '',
       contentType: data['contentType'] ?? '',
       requestId: data['requestId'] ?? '',
+      postId: data['postId'] ?? '',
       urgent: data['urgent'] as bool? ?? false,
+      outcome: data['outcome'] ?? '',
+      rating: (data['rating'] as num?)?.toInt() ?? 0,
     );
   }
 }

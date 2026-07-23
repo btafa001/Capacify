@@ -24,6 +24,17 @@
   "storage": {
     "rules": "storage.rules"
   },
+  "//emulators": "Only the Firestore emulator is configured, and only so `firebase emulators:exec` can run the rules test suite in firestore-tests/ (locally and in CI). The port is pinned because the tests connect to it explicitly.",
+  "emulators": {
+    "firestore": {
+      "host": "127.0.0.1",
+      "port": 8080
+    },
+    "ui": {
+      "enabled": false
+    },
+    "singleProjectMode": true
+  },
   "apphosting": {
     "backendId": "backend",
     "rootDir": "exit",
@@ -45,11 +56,31 @@
     ],
     "rewrites": [
       {
+        "//": "One-click unsubscribe target for the List-Unsubscribe header on the engagement emails. MUST stay ahead of the SPA catch-all below — Hosting takes the first matching rewrite, so behind it this would serve index.html and the mail client's POST would 'succeed' without unsubscribing anyone. Same domain as the From: address on purpose; an unsubscribe URL on cloudfunctions.net is a deliverability negative.",
+        "source": "/e/abmelden",
+        "function": {
+          "functionId": "emailUnsubscribe",
+          "region": "europe-west3"
+        }
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }
     ],
     "headers": [
+      {
+        "//": "Global security headers. MUST be source '**': the SPA rewrite serves index.html for deep links (/pricing etc.), but Hosting matches header globs against the ORIGINAL request path, so anything narrower would leave real routes unprotected. HSTS/nosniff/X-Frame-Options/Referrer-Policy/Permissions-Policy are enforced now (they can't break app functionality). The Content-Security-Policy ships Report-Only first on purpose: a single missed Google/Firebase endpoint under an enforced policy is the same total-lockout failure class as the App Check incidents (blank app / permission-denied for everyone). Verify the browser console is clean across real login (email + Google/Apple popup), reCAPTCHA/App Check, Firestore reads, logo load from Storage, FCM, and Analytics, THEN promote by renaming the key to 'Content-Security-Policy'. Clickjacking (the reveal-contact/confirm concern) is already blocked today by X-Frame-Options: DENY; frame-ancestors 'none' becomes a second lock once CSP is enforced. style-src/font-src no longer allow fonts.googleapis.com / fonts.gstatic.com: Inter and Archivo are bundled assets served from our own origin, so a request to either Google font host now means something regressed and should be blocked, not tolerated. CSP notes: 'wasm-unsafe-eval' is required for CanvasKit's WASM; 'unsafe-inline' script/style covers Flutter's injected styles + the two inline bootstrap scripts in index.html (low XSS risk — Flutter renders to canvas, no user HTML in the DOM); connect-src *.googleapis.com covers Firestore/Auth/Storage/App Check/Installations/FCM in one; frame-src carries the Firebase Auth iframe + reCAPTCHA challenge (the Google/Apple popups are top-level windows, not frames). If capacify.de ever serves an http-only subdomain, drop 'includeSubDomains' from HSTS.",
+        "source": "**",
+        "headers": [
+          { "key": "Strict-Transport-Security", "value": "max-age=31536000; includeSubDomains" },
+          { "key": "X-Content-Type-Options", "value": "nosniff" },
+          { "key": "X-Frame-Options", "value": "DENY" },
+          { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+          { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=(), payment=(), usb=()" },
+          { "key": "Content-Security-Policy-Report-Only", "value": "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://www.gstatic.com https://www.google.com https://apis.google.com https://www.googletagmanager.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https://firebasestorage.googleapis.com https://*.firebasestorage.app https://lh3.googleusercontent.com https://www.gstatic.com; connect-src 'self' https://*.googleapis.com https://*.firebasestorage.app https://capacify-mvp.firebaseapp.com https://europe-west3-capacify-mvp.cloudfunctions.net https://www.google.com https://www.gstatic.com https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com; frame-src 'self' https://capacify-mvp.firebaseapp.com https://www.google.com https://recaptcha.google.com https://accounts.google.com https://appleid.apple.com; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests" }
+        ]
+      },
       {
         "//": "Content-hashed assets (AssetManifest, fonts) and the CanvasKit runtime live under fixed dirs and only change name/content together — safe to cache hard.",
         "source": "assets/**",

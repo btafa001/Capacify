@@ -1,25 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import 'firebase_options.dart';
 import 'core/constants/app_constants.dart';
-import 'core/services/analytics_service.dart';
+import 'core/router/app_router.dart';
+import 'core/router/url_strategy_stub.dart'
+    if (dart.library.js_interop) 'core/router/url_strategy_web.dart';
 import 'core/theme/app_theme.dart';
 import 'shared/widgets/consent_banner.dart';
-import 'core/services/auth_provider.dart';
 import 'core/services/theme_provider.dart';
-import 'core/services/capacity_provider.dart';
 import 'core/localization/app_localizations.dart';
 import 'core/localization/locale_provider.dart';
-import 'features/landing/screens/landing_screen.dart';
-import 'features/dashboard/screens/dashboard_screen.dart';
-import 'features/opportunities/screens/capacity_detail_screen.dart';
-
-final navigatorKey = GlobalKey<NavigatorState>();
 
 // Non-fatal App Check activation: if reCAPTCHA can't init (network, blocked
 // script, etc.) the app still loads — enforcement is toggled server-side and
@@ -41,30 +36,37 @@ Future<void> _activateAppCheck() async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Preload every Inter/Archivo weight actually used by the theme and the
-  // landing page before first paint, so nothing flashes the fallback system
-  // font in for a moment on load. Each (family, weight) pair is a distinct
-  // downloadable file to Google Fonts — preloading just the default weight
-  // isn't enough since interTextTheme() and the headline text use w600-w900.
+  // Build the semantics tree unconditionally, for the whole life of the app.
+  //
+  // Flutter only produces semantics when some client asks for it. On web that
+  // client is a hidden "Enable accessibility" button the visitor has to find
+  // and press first — so an audit of the live site saw an accessibility tree
+  // containing exactly that one node and nothing else: no headings, no labels,
+  // no buttons. A screen-reader or keyboard-only user had no product at all.
+  // Holding this handle forever keeps the tree populated from the first frame.
+  // (Deliberately never disposed — dropping the last handle switches semantics
+  // back off. The cost is the tree being maintained even for users who don't
+  // need it, which is the correct trade for an EAA-scope B2B product.)
+  SemanticsBinding.instance.ensureSemantics();
+
+  // Real paths instead of `/#/…`. Must run before the first frame — see
+  // core/router/url_strategy_web.dart for why the routes don't work without it.
+  configureUrlStrategy();
+
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  // App Check + font preload run in parallel after Firebase is up. App Check
-  // attests requests come from the real app (reCAPTCHA v3) before Firestore/
-  // Auth accept them — the defense that makes the rules-enforced paywall and
-  // anti-spam actually hold against scripted access. Activation is wrapped so
-  // a transient App Check failure never blanks the app on load.
-  await Future.wait([
-    _activateAppCheck(),
-    GoogleFonts.pendingFonts([
-      GoogleFonts.inter(),
-      GoogleFonts.inter(fontWeight: FontWeight.w600),
-      GoogleFonts.inter(fontWeight: FontWeight.w700),
-      GoogleFonts.inter(fontWeight: FontWeight.w900),
-      GoogleFonts.archivo(fontWeight: FontWeight.w900),
-    ]),
-  ]);
+  // App Check attests requests come from the real app (reCAPTCHA v3) before
+  // Firestore/Auth accept them — the defense that makes the rules-enforced
+  // paywall and anti-spam actually hold against scripted access. Activation is
+  // wrapped so a transient App Check failure never blanks the app on load.
+  //
+  // Nothing else blocks runApp any more: Inter/Archivo used to be downloaded
+  // from fonts.gstatic.com here (five files, awaited) — they're bundled assets
+  // now, so there is no font round-trip to wait on and no visitor IP handed to
+  // Google before the consent banner is answered.
+  await _activateAppCheck();
 
   runApp(
     const ProviderScope(
@@ -82,32 +84,17 @@ class CapacifyApp extends ConsumerStatefulWidget {
 
 class _CapacifyAppState extends ConsumerState<CapacifyApp> {
   @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _openSharedCapacityIfAny());
-  }
-
-  // Resolves a shared post link (?capacity=<id> in the URL) to the actual
-  // post, shown as the same popup used from My Listings/Favorites — runs
-  // once on load, on top of whatever home screen auth state resolves to,
-  // so a shared link works whether or not the visitor is signed in.
-  Future<void> _openSharedCapacityIfAny() async {
-    final capacityId = Uri.base.queryParameters['capacity'];
-    if (capacityId == null || capacityId.isEmpty) return;
-    final capacity = await ref.read(capacityServiceProvider).getCapacityById(capacityId);
-    final context = navigatorKey.currentContext;
-    if (capacity == null || context == null || !context.mounted) return;
-    showCapacityDetailDialog(context, capacity);
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final authState = ref.watch(authStateProvider);
     final locale = ref.watch(localeProvider);
     final themeMode = ref.watch(themeModeProvider);
 
-    return MaterialApp(
-      navigatorKey: navigatorKey,
+    // MaterialApp.router, not MaterialApp(home:) — the app now has real URLs
+    // (see core/router/app_router.dart). Shared-link handling that used to live
+    // here as a one-shot ?capacity= reader is a route now (/kapazitaet/:id),
+    // with the old query-parameter form redirected to it, so a refresh or a
+    // second shared link works the same as the first.
+    return MaterialApp.router(
+      routerConfig: ref.watch(routerProvider),
       title: 'Capacify',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
@@ -115,7 +102,6 @@ class _CapacifyAppState extends ConsumerState<CapacifyApp> {
       themeMode: themeMode,
       locale: locale,
       supportedLocales: const [Locale('de'), Locale('en')],
-      navigatorObservers: [AnalyticsService.observer],
       localizationsDelegates: const [
         AppLocalizations.delegate,
         GlobalMaterialLocalizations.delegate,
@@ -124,20 +110,9 @@ class _CapacifyAppState extends ConsumerState<CapacifyApp> {
       ],
       // ConsentGate overlays the GDPR cookie banner until the visitor decides;
       // analytics stays off until then (AnalyticsService is gated on consent).
-      home: ConsentGate(
-        child: authState.when(
-          data: (user) {
-            if (user != null) return const DashboardScreen();
-            return const LandingScreen();
-          },
-          loading: () => const Scaffold(
-            body: Center(
-              child: CircularProgressIndicator(color: AppColors.primary),
-            ),
-          ),
-          error: (_, __) => const LandingScreen(),
-        ),
-      ),
+      // As a builder rather than a wrapper around `home`, so it sits above
+      // every route instead of only the first one.
+      builder: (context, child) => ConsentGate(child: child ?? const SizedBox()),
     );
   }
 }

@@ -14,9 +14,12 @@ import 'admin_onboarding_screen.dart';
 import 'contact_requests_tab.dart';
 import '../../company/screens/company_detail_screen.dart';
 import '../../../core/localization/app_localizations.dart';
+import '../../../shared/widgets/app_states.dart';
 import '../../../shared/widgets/star_rating.dart';
 import '../../../core/utils/content_moderation.dart';
 import '../../../core/services/analytics_service.dart';
+import '../../../core/services/report_provider.dart';
+import '../../../core/models/report_model.dart';
 
 class AdminScreen extends ConsumerStatefulWidget {
   final bool embedded;
@@ -35,7 +38,7 @@ class _AdminScreenState extends ConsumerState<AdminScreen>
   void initState() {
     super.initState();
     AnalyticsService.logScreenView('Admin');
-    _tabs = TabController(length: 7, vsync: this);
+    _tabs = TabController(length: 8, vsync: this);
     _tabs.addListener(() => setState(() {}));
   }
 
@@ -89,6 +92,59 @@ class _AdminScreenState extends ConsumerState<AdminScreen>
     }
   }
 
+  // One-off: close the two PII holes on data that already exists. New writes
+  // are already correct — this fixes the documents written before that.
+  //  1. Company contact (email/phone/address/postalCode) still sitting inline
+  //     on the world-readable companies doc → moved to the gated
+  //     companyContacts sidecar.
+  //  2. Exact poster rating/response figures still on public posts → re-banded,
+  //     so an anonymous post can't be joined back against the directory.
+  // Both are idempotent and safe to re-run; both are admin-gated by Firestore
+  // rules, so this runs entirely client-side like the legacy migration above.
+  Future<void> _runPrivacyBackfill() async {
+    final l = AppLocalizations.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l.privacyBackfillTitle),
+        content: Text(l.privacyBackfillConfirm),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false), child: Text(l.cancel)),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
+            child: Text(l.privacyBackfillRun),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => _migrating = true);
+    try {
+      final contacts =
+          await ref.read(companyServiceProvider).migrateContactsToGatedSidecar();
+      final posts =
+          await ref.read(capacityServiceProvider).rebandPublicPostSignals();
+      if (mounted) {
+        final failed = (contacts['failed'] ?? 0) + (posts['failed'] ?? 0);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(l.privacyBackfillResult(
+              contacts['migrated'] ?? 0, posts['migrated'] ?? 0, failed)),
+          backgroundColor: failed > 0 ? AppColors.error : AppColors.success,
+          duration: const Duration(seconds: 6),
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(l.errorWithMessage(e)), backgroundColor: AppColors.error));
+      }
+    } finally {
+      if (mounted) setState(() => _migrating = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
@@ -103,6 +159,7 @@ class _AdminScreenState extends ConsumerState<AdminScreen>
     final flaggedCompaniesAsync = ref.watch(flaggedCompaniesProvider);
     final flaggedCount = (flaggedCapsAsync.valueOrNull?.length ?? 0) +
         (flaggedCompaniesAsync.valueOrNull?.length ?? 0);
+    final pendingReportsCount = ref.watch(pendingReportsProvider).length;
 
     return Scaffold(
       backgroundColor: c.background,
@@ -114,6 +171,7 @@ class _AdminScreenState extends ConsumerState<AdminScreen>
             ? null
             : IconButton(
                 icon: Icon(Icons.arrow_back, color: c.textPrimary),
+                tooltip: MaterialLocalizations.of(context).backButtonTooltip,
                 onPressed: () => Navigator.pop(context),
               ),
         title: Row(
@@ -159,6 +217,11 @@ class _AdminScreenState extends ConsumerState<AdminScreen>
                     child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
                   )
                 : Icon(Icons.cleaning_services_outlined, color: c.textSecondary),
+          ),
+          IconButton(
+            tooltip: l.privacyBackfillTooltip,
+            onPressed: _migrating ? null : _runPrivacyBackfill,
+            icon: Icon(Icons.shield_outlined, color: c.textSecondary),
           ),
         ],
         bottom: TabBar(
@@ -256,6 +319,33 @@ class _AdminScreenState extends ConsumerState<AdminScreen>
             Tab(text: l.companiesTabCaps),
             Tab(text: l.onboardTab),
             Tab(text: l.contactRequestsTab),
+            Tab(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(l.reportsTab),
+                  if (pendingReportsCount > 0) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: AppColors.accent,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '$pendingReportsCount',
+                        style: const TextStyle(
+                          color: Colors.black,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
           ],
         ),
       ),
@@ -276,6 +366,7 @@ class _AdminScreenState extends ConsumerState<AdminScreen>
               ),
               _OnboardingTab(),
               const ContactRequestsTab(),
+              _ReportsTab(),
             ],
           ),
         ],
@@ -899,10 +990,10 @@ class _VerificationTab extends ConsumerWidget {
       loading: () => const Center(
           child: CircularProgressIndicator(
               color: AppColors.primary)),
-      error: (e, _) => Center(
-          child: Text(l.errorWithMessage(e),
-              style:
-                  const TextStyle(color: AppColors.error))),
+      error: (e, _) => AppErrorState(
+        error: e,
+        onRetry: () => ref.invalidate(pendingCompaniesProvider),
+      ),
     );
   }
 }
@@ -1219,13 +1310,17 @@ class _RatingsTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final pendingAsync = ref.watch(pendingRatingsProvider);
-    return _RatingsList(pendingAsync: pendingAsync);
+    return _RatingsList(
+      pendingAsync: pendingAsync,
+      onRetry: () => ref.invalidate(pendingRatingsProvider),
+    );
   }
 }
 
 class _RatingsList extends StatelessWidget {
   final AsyncValue<List<CompanyRatingModel>> pendingAsync;
-  const _RatingsList({required this.pendingAsync});
+  final VoidCallback onRetry;
+  const _RatingsList({required this.pendingAsync, required this.onRetry});
 
   @override
   Widget build(BuildContext context) {
@@ -1284,10 +1379,7 @@ class _RatingsList extends StatelessWidget {
       loading: () => const Center(
           child: CircularProgressIndicator(
               color: AppColors.primary)),
-      error: (e, _) => Center(
-          child: Text(l.errorWithMessage(e),
-              style:
-                  const TextStyle(color: AppColors.error))),
+      error: (e, _) => AppErrorState(error: e, onRetry: onRetry),
     );
   }
 }
@@ -1669,14 +1761,16 @@ class _ModerationTab extends ConsumerWidget {
           child: CircularProgressIndicator(color: AppColors.primary));
     }
     if (capsAsync.hasError) {
-      return Center(
-          child: Text(l.errorWithMessage(capsAsync.error!),
-              style: const TextStyle(color: AppColors.error)));
+      return AppErrorState(
+        error: capsAsync.error!,
+        onRetry: () => ref.invalidate(flaggedCapacitiesProvider),
+      );
     }
     if (companiesAsync.hasError) {
-      return Center(
-          child: Text(l.errorWithMessage(companiesAsync.error!),
-              style: const TextStyle(color: AppColors.error)));
+      return AppErrorState(
+        error: companiesAsync.error!,
+        onRetry: () => ref.invalidate(flaggedCompaniesProvider),
+      );
     }
 
     final caps = capsAsync.valueOrNull ?? [];
@@ -2115,6 +2209,313 @@ class _ModerationCardShell extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────
+//  TAB — USER-FILED REPORTS
+// ─────────────────────────────────────────────────────
+//
+// Distinct from _ModerationTab above: that one shows content the SYSTEM
+// auto-flagged (moderation.js / enforceCompanyIntegrity). This shows reports
+// a USER filed via ReportService.submitReport (chat_screen.dart,
+// live_capacity_feed_screen.dart) — previously written to Firestore but never
+// surfaced anywhere in the admin UI (getAllReports() was dead code), so
+// day-one abuse reports sat unseen indefinitely.
+class _ReportsTab extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = AppColors.of(context);
+    final l = AppLocalizations.of(context);
+    final reportsAsync = ref.watch(allReportsProvider);
+
+    if (reportsAsync.isLoading) {
+      return const Center(
+          child: CircularProgressIndicator(color: AppColors.primary));
+    }
+    if (reportsAsync.hasError) {
+      return AppErrorState(
+        error: reportsAsync.error!,
+        onRetry: () => ref.invalidate(allReportsProvider),
+      );
+    }
+
+    // Pending first (newest first within each group), then already-handled
+    // ones below — an admin should never have to scroll past a backlog of
+    // resolved reports to find the one that still needs attention.
+    final all = reportsAsync.valueOrNull ?? [];
+    final pending = all.where((r) => r.status == 'pending').toList();
+    final handled = all.where((r) => r.status != 'pending').toList();
+
+    if (all.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 64,
+              height: 64,
+              decoration: BoxDecoration(
+                color: AppColors.live.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Icon(
+                Icons.check_circle_outline,
+                size: 32,
+                color: AppColors.live,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              l.noReportsTitle,
+              style: TextStyle(
+                color: c.textSecondary,
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              l.allReportsHandledText,
+              style: TextStyle(color: c.textTertiary, fontSize: 13),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 80),
+      children: [
+        ...pending.map((r) => _ReportCard(report: r)),
+        ...handled.map((r) => _ReportCard(report: r)),
+      ],
+    );
+  }
+}
+
+class _ReportCard extends ConsumerWidget {
+  final ReportModel report;
+  const _ReportCard({required this.report});
+
+  Future<void> _setStatus(
+      BuildContext context, WidgetRef ref, String status) async {
+    final l = AppLocalizations.of(context);
+    try {
+      await ref.read(reportServiceProvider).setReportStatus(report.id, status);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(status == 'resolved'
+              ? l.reportResolvedSnackbar
+              : l.reportDismissedSnackbar),
+          backgroundColor:
+              status == 'resolved' ? AppColors.live : AppColors.textSecondary,
+          duration: const Duration(seconds: 3),
+        ));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(l.errorWithMessage(e)),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = AppColors.of(context);
+    final l = AppLocalizations.of(context);
+    final date = report.createdAt;
+    final dateStr = '${date.day}.${date.month}.${date.year}';
+    final isPending = report.status == 'pending';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      decoration: BoxDecoration(
+        color: c.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isPending
+              ? AppColors.accent.withOpacity(0.35)
+              : c.border,
+        ),
+      ),
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              width: 4,
+              decoration: BoxDecoration(
+                color: isPending ? AppColors.accent : c.border,
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(12),
+                  bottomLeft: Radius.circular(12),
+                ),
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: c.surfaceVariant,
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: c.border),
+                          ),
+                          child: Text(
+                            l.reportedPostingTypeLabel,
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w900,
+                              color: c.textTertiary,
+                              letterSpacing: 0.4,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            report.capacityTitle.isNotEmpty
+                                ? report.capacityTitle
+                                : report.companyName,
+                            style: TextStyle(
+                              color: c.textPrimary,
+                              fontWeight: FontWeight.w900,
+                              fontSize: 15,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (!isPending)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: c.border.withOpacity(0.4),
+                              borderRadius: BorderRadius.circular(5),
+                            ),
+                            child: Text(
+                              report.status == 'resolved'
+                                  ? l.reportStatusResolved
+                                  : l.reportStatusDismissed,
+                              style: TextStyle(
+                                fontSize: 9,
+                                fontWeight: FontWeight.w900,
+                                color: c.textTertiary,
+                                letterSpacing: 0.3,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      report.companyName,
+                      style: TextStyle(fontSize: 13, color: c.textSecondary),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      report.reason.label,
+                      style: TextStyle(
+                          color: c.textSecondary, fontSize: 13, height: 1.4),
+                    ),
+                    const SizedBox(height: 10),
+                    _InfoChip(
+                        icon: Icons.calendar_today_outlined,
+                        text: l.sinceDateLabel(dateStr)),
+                    if (isPending) ...[
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          if (report.companyId.isNotEmpty)
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () async {
+                                  final co = await ref
+                                      .read(companyServiceProvider)
+                                      .getCompanyStream(report.companyId)
+                                      .first;
+                                  if (co != null && context.mounted) {
+                                    showCompanyDetailDialog(context, co);
+                                  }
+                                },
+                                icon: const Icon(Icons.visibility_outlined,
+                                    size: 16),
+                                label: Text(
+                                  l.actionCheckProfile,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 12,
+                                    letterSpacing: 0.4,
+                                  ),
+                                ),
+                                style: OutlinedButton.styleFrom(
+                                  minimumSize: const Size(double.infinity, 40),
+                                ),
+                              ),
+                            ),
+                          if (report.companyId.isNotEmpty)
+                            const SizedBox(width: 10),
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () =>
+                                  _setStatus(context, ref, 'dismissed'),
+                              style: OutlinedButton.styleFrom(
+                                minimumSize: const Size(double.infinity, 40),
+                              ),
+                              child: Text(
+                                l.dismissReportLabel,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 12,
+                                  letterSpacing: 0.4,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: () =>
+                                  _setStatus(context, ref, 'resolved'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.live,
+                                foregroundColor: Colors.white,
+                                minimumSize: const Size(double.infinity, 40),
+                                elevation: 0,
+                              ),
+                              child: Text(
+                                l.markResolvedLabel,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 12,
+                                  letterSpacing: 0.4,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────
 //  TAB 3 — ALL COMPANIES
 // ─────────────────────────────────────────────────────
 
@@ -2227,10 +2628,10 @@ class _CompaniesTab extends ConsumerWidget {
       loading: () => const Center(
           child: CircularProgressIndicator(
               color: AppColors.primary)),
-      error: (e, _) => Center(
-          child: Text(l.errorWithMessage(e),
-              style:
-                  const TextStyle(color: AppColors.error))),
+      error: (e, _) => AppErrorState(
+        error: e,
+        onRetry: () => ref.invalidate(allCompaniesAdminProvider),
+      ),
     );
   }
 }
@@ -2569,13 +2970,21 @@ class _CompanyAdminRow extends ConsumerWidget {
             ),
           ],
 
-          // Suspend / unsuspend toggle
+          // Suspend / unsuspend toggle. The "suspend" (idle) state used to be
+          // c.textTertiary — a muted adaptive grey meant for secondary TEXT,
+          // not an actionable icon; at 18px it was near-invisible against
+          // both the dark surface and (per live report) the light one too.
+          // AppColors.warning is a fixed, high-contrast amber already used
+          // elsewhere as a caution accent (password-strength, email-verify
+          // banner) — reads clearly in both themes and doesn't collide with
+          // AppColors.error, which the badge above uses for "already
+          // suspended" (this icon means "click to suspend", not that state).
           const SizedBox(width: 8),
           IconButton(
             icon: Icon(
               company.suspended ? Icons.play_circle_outline : Icons.block,
               size: 18,
-              color: company.suspended ? AppColors.live : c.textTertiary,
+              color: company.suspended ? AppColors.live : AppColors.warning,
             ),
             tooltip: company.suspended ? l.unsuspendCompanyTooltip : l.suspendCompanyTooltip,
             onPressed: () => company.suspended ? _unsuspend(context, ref) : _suspend(context, ref),

@@ -13,6 +13,7 @@
 //   • notifyOnGrant       — C1: email the poster the moment a request reveals them (transactional)
 //   • notifyOnNewCapacity — retention: email owners of matching saved searches on a new post
 //   • weeklyDigest        — retention: Monday "your market this week" overview
+//   • emailUnsubscribe    — RFC 8058 one-click opt-out target for the two retention emails
 //   • onNewMessage        — #9: notification + push + debounced email on a new chat message
 //   • onVerificationSubmitted / onCapacityFlagged / onCompanyFlagged / onRatingWrite
 //                         — #9: notification + push to every admin the moment something needs review
@@ -23,8 +24,11 @@
 // recipient) so a burst of messages can't spam an inbox, and skipped entirely
 // if the recipient has users/{uid}.notifyOnNewMessage == false. The two
 // retention emails are ENGAGEMENT — they additionally require the recipient to
-// have opted in (companies/{id}.emailOptIn == true). Every email/push path is
-// a no-op until SMTP_URL / an FCM token exists, so the app is unaffected until then.
+// have opted in (companies/{id}.emailOptIn == true) and are the only two that
+// carry List-Unsubscribe headers (see bulkMailFields / emailUnsubscribe);
+// transactional mail isn't a subscription and must not be opt-out-able.
+// Every email/push path is a no-op until SMTP_URL *and* MAIL_FROM are set (see
+// mailReady) / an FCM token exists, so the app is unaffected until then.
 const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { onDocumentWritten, onDocumentCreated } = require('firebase-functions/v2/firestore');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
@@ -104,6 +108,14 @@ exports.verifyMyCompany = onCall(async (req) => {
     await companyRef.update({
       vatValid: true,
       vatVerifiedName: viesName,
+      // H4 fix: the raw VAT number isn't stored pre-normalized, so the
+      // duplicate-VAT check in enforceCompanyIntegrity used to pull every
+      // vatValid:true company and normalize+compare each one in memory — an
+      // O(n) scan on every verified profile edit. Stamping the already-
+      // normalized value here lets that check run as a single equality query
+      // instead. `raw` was normalized (uppercase, no spaces) at the top of
+      // this function from the same vatNumber this VIES check just validated.
+      vatNumberNormalized: raw,
       vatVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
       // Only move into the review queue if not already verified.
       ...(cur === 'verified' ? {} : { verificationStatus: 'pending' }),
@@ -345,8 +357,229 @@ exports.deleteChat = onCall(async (req) => {
 // but skips the send, so the rest of the app is unaffected.
 // ─────────────────────────────────────────────────────────────────────────────
 const SMTP_URL = process.env.SMTP_URL || '';
-const MAIL_FROM = process.env.MAIL_FROM || 'Capacify <onboarding@resend.dev>';
+// NO default sender, deliberately. This used to fall back to Resend's shared
+// sandbox address (onboarding@resend.dev), which only ever delivers to the
+// Resend account owner's own inbox. With SMTP_URL set but MAIL_FROM forgotten,
+// the relay ACCEPTS every message and drops it — no bounce, no error, nothing
+// in these logs — so a launched product would look like it was emailing users
+// and reach none of them. An unset MAIL_FROM is now the same explicit
+// "not configured yet" state as an unset SMTP_URL: see mailReady().
+//
+// Before launch MAIL_FROM must be an address on a domain verified with the
+// relay (e.g. `Capacify <hallo@capacify.de>`), with SPF, DKIM and DMARC
+// published for it — a From: domain without those is spam-foldered by Gmail
+// and rejected outright by several German business mail hosts.
+const MAIL_FROM = process.env.MAIL_FROM || '';
 const APP_URL = process.env.APP_URL || 'https://capacify.de';
+
+// ── One-click unsubscribe (RFC 8058) ────────────────────────────────────────
+// Gmail and Yahoo's bulk-sender rules require a working one-click unsubscribe
+// on marketing/engagement mail. A footer sentence pointing at the Settings
+// screen does not satisfy it: the requirement is a List-Unsubscribe header the
+// mail client itself can act on, which is what puts the native "Unsubscribe"
+// button next to the sender name.
+//
+// UNSUB_SECRET signs the per-recipient link. Without it there is no way to
+// tell a real link from a guessed one — company ids are readable from the
+// public directory, so an unsigned endpoint would let anyone unsubscribe any
+// company. Unset → the headers are omitted rather than sent unsigned, and the
+// engagement sends log that they went out without them.
+const UNSUB_SECRET = process.env.UNSUB_SECRET || '';
+// Optional monitored mailbox for the mailto: form (some older clients only
+// support that one). Only advertised when set — pointing at an address nobody
+// reads is worse than omitting it, since the unsubscribe silently fails.
+const UNSUB_MAILBOX = process.env.UNSUB_MAILBOX || '';
+// Served from our own domain via the Hosting rewrite in firebase.json, so the
+// unsubscribe link sits on the same domain as the From: address. Override with
+// UNSUB_URL to point straight at the function instead.
+const UNSUB_URL = process.env.UNSUB_URL || `${APP_URL}/e/abmelden`;
+
+function unsubToken(companyId) {
+  return crypto.createHmac('sha256', UNSUB_SECRET).update(`unsub:${companyId}`).digest('hex');
+}
+
+// The recipient's personal unsubscribe link, or null when unsigned.
+function unsubLinkFor(companyId) {
+  if (!UNSUB_SECRET || !companyId) return null;
+  return `${UNSUB_URL}?c=${encodeURIComponent(companyId)}&t=${unsubToken(companyId)}`;
+}
+
+// Extra sendMail fields that mark a message as bulk and make it unsubscribable.
+// Transactional mail (a reply to your own listing, a chat message, an address
+// verification) deliberately does NOT get these — those aren't a subscription
+// and shouldn't be opt-out-able.
+function bulkMailFields(companyId) {
+  const link = unsubLinkFor(companyId);
+  if (!link) return {};
+  const targets = [`<${link}>`];
+  if (UNSUB_MAILBOX) targets.push(`<mailto:${UNSUB_MAILBOX}?subject=unsubscribe>`);
+  return {
+    headers: {
+      'List-Unsubscribe': targets.join(', '),
+      // Declares RFC 8058 support: the client may POST the link directly
+      // instead of opening it, so unsubscribing takes one tap and never
+      // leaves the inbox.
+      'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+    },
+  };
+}
+
+// Single gate for "can we actually deliver mail right now?". Every send path
+// below runs through this instead of testing SMTP_URL alone.
+function mailReady(where) {
+  if (!SMTP_URL) {
+    console.log(`${where}: no SMTP_URL configured — skipping email.`);
+    return false;
+  }
+  if (!MAIL_FROM) {
+    console.error(
+      `${where}: SMTP_URL is set but MAIL_FROM is not. Refusing to send — ` +
+      'a missing sender means the relay accepts the mail and silently drops ' +
+      'it. Set MAIL_FROM to a verified sender on capacify.de.'
+    );
+    return false;
+  }
+  return true;
+}
+
+// Called by the engagement sends once they know they're about to send to
+// someone. Bulk mail still goes out unsigned — an opted-in recipient shouldn't
+// lose their alerts over a missing env var — but never quietly.
+function warnIfUnsignedBulk(where) {
+  if (UNSUB_SECRET) return;
+  console.error(
+    `${where}: UNSUB_SECRET is not set — sending WITHOUT List-Unsubscribe ` +
+    'headers. Gmail and Yahoo require a working one-click unsubscribe on ' +
+    'bulk mail; without it this mail is a spam-folder candidate.'
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The unsubscribe endpoint the List-Unsubscribe header points at.
+//
+// Two callers, both handled here:
+//   • POST — the mail client itself, doing RFC 8058 one-click. It sends
+//     `List-Unsubscribe=One-Click` as the body and never shows the response,
+//     so a bare 200 is the whole contract. It carries NO cookie or auth, which
+//     is why the link is HMAC-signed: the signature is the only thing proving
+//     this request came from a link we generated.
+//   • GET — a human clicking the footer link, who gets a confirmation page.
+//
+// Unsubscribing clears companies/{id}.emailOptIn, which is the opt-in the two
+// engagement emails are gated on. Transactional mail (someone replied to your
+// listing, a chat message, address verification) is deliberately untouched —
+// that isn't a subscription and silently dropping it would break the product.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.emailUnsubscribe = onRequest(async (req, res) => {
+  const page = (title, body) => `<!DOCTYPE html><html lang="de"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title} — Capacify</title></head>
+<body style="margin:0;background:#eef1f4;font:400 15px/1.6 Arial,Helvetica,sans-serif;color:#3f4652">
+<div style="max-width:520px;margin:64px auto;padding:32px;background:#fff;border:1px solid #e6e9ee;border-radius:16px">
+<div style="font:900 22px/1 Arial,Helvetica,sans-serif;color:#111;letter-spacing:-.5px;margin-bottom:20px">Capac<span style="color:${BRAND}">ify</span></div>
+<h1 style="margin:0 0 12px;font:800 20px/1.35 Arial,Helvetica,sans-serif;color:#111">${title}</h1>
+<p style="margin:0 0 18px">${body}</p>
+<a href="${APP_URL}" style="display:inline-block;padding:12px 24px;border-radius:10px;background:${BRAND};color:#fff;font-weight:800;text-decoration:none">Zu Capacify</a>
+</div></body></html>`;
+
+  if (req.method !== 'GET' && req.method !== 'POST') {
+    res.set('Allow', 'GET, POST');
+    res.status(405).send('Method not allowed.');
+    return;
+  }
+
+  const companyId = String((req.query && req.query.c) || '');
+  const token = String((req.query && req.query.t) || '');
+
+  // Any failure below answers identically, so this can't be used to probe
+  // which company ids exist.
+  const reject = () => {
+    if (req.method === 'POST') { res.status(400).send('Invalid unsubscribe link.'); return; }
+    res.status(400).send(page(
+      'Link ungültig',
+      'Dieser Abmelde-Link ist ungültig oder abgelaufen. Sie können Benachrichtigungen jederzeit direkt in den Einstellungen abstellen.'
+    ));
+  };
+
+  if (!UNSUB_SECRET || !companyId || !token) return reject();
+  // Firestore document ids: no slashes, no path traversal, bounded length.
+  if (companyId.length > 128 || companyId.includes('/')) return reject();
+
+  const expected = Buffer.from(unsubToken(companyId), 'utf8');
+  const given = Buffer.from(token, 'utf8');
+  if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) return reject();
+
+  try {
+    const ref = db().collection('companies').doc(companyId);
+    // update() rather than set(merge): a deleted company must not be
+    // resurrected as a stub doc by an unsubscribe click. A missing doc means
+    // there is nothing left subscribed, which is the outcome asked for.
+    await ref.update({ emailOptIn: false });
+    console.log('emailUnsubscribe: opted out', companyId, `(${req.method})`);
+  } catch (e) {
+    if (e && e.code === 5) {
+      console.log('emailUnsubscribe: company no longer exists', companyId);
+    } else {
+      console.error('emailUnsubscribe: write failed', companyId, e);
+      if (req.method === 'POST') { res.status(500).send('Could not process the unsubscribe.'); return; }
+      res.status(500).send(page(
+        'Das hat nicht geklappt',
+        'Wir konnten Sie gerade nicht abmelden. Bitte versuchen Sie es später erneut oder stellen Sie die Benachrichtigungen in den Einstellungen ab.'
+      ));
+      return;
+    }
+  }
+
+  if (req.method === 'POST') { res.status(200).send('Unsubscribed.'); return; }
+  res.status(200).send(page(
+    'Sie sind abgemeldet',
+    'Sie erhalten keine Match-Benachrichtigungen und keinen Wochenüberblick mehr. ' +
+    'E-Mails zu Ihren eigenen Anzeigen und Nachrichten bekommen Sie weiterhin — ' +
+    'auch die können Sie in den Einstellungen abstellen.'
+  ));
+});
+
+// Master email kill-switch. users/{uid}.notifyByEmail (default true when unset)
+// is the global "send me no email" preference the Settings screen writes. EVERY
+// notification-email path below honours it. The sole exception is
+// sendVerificationEmail — email confirmation is essential account security, not
+// a notification, so a user who opted out of email must still be able to verify.
+// Fail-open: an unresolved/absent uid never suppresses, matching the existing
+// "no-op until configured" posture of every other email path here.
+async function emailAllowedForUser(uid) {
+  if (!uid) return true;
+  try {
+    const snap = await db().collection('users').doc(uid).get();
+    return !snap.exists || snap.data().notifyByEmail !== false;
+  } catch (e) {
+    console.error('emailAllowedForUser failed', e);
+    return true;
+  }
+}
+
+// A company's notification address. Contact data was moved OFF the
+// world-readable companies document into the gated companyContacts sidecar
+// (see firestore.rules) — the public doc is `read: if true` so anonymous
+// visitors can browse the directory, which also meant an unauthenticated REST
+// read returned every company's email, phone and address in one request.
+//
+// `companyData` is the already-fetched companies doc where the caller has one,
+// used only as a FALLBACK for companies whose inline contact hasn't been moved
+// yet. That fallback is what makes this safe to deploy in either order
+// relative to the one-off migration; once the migration has run there is
+// nothing left inline for it to find. Admin SDK reads bypass rules, so the
+// gating above doesn't affect any of this.
+async function companyNotifyEmail(companyId, companyData) {
+  if (!companyId) return null;
+  try {
+    const snap = await db().doc(`companyContacts/${companyId}`).get();
+    const email = snap.exists && snap.data().email;
+    if (email) return email;
+  } catch (e) {
+    console.error('companyNotifyEmail lookup failed', companyId, e);
+  }
+  return (companyData && companyData.email) || null;
+}
 
 exports.notifyOnGrant = onDocumentWritten('contact_requests/{id}', async (event) => {
   const before = event.data && event.data.before && event.data.before.data();
@@ -356,16 +589,17 @@ exports.notifyOnGrant = onDocumentWritten('contact_requests/{id}', async (event)
   const becameGranted = after.status === 'granted' && (!before || before.status !== 'granted');
   if (!becameGranted) return;
 
-  if (!SMTP_URL) {
-    console.log('notifyOnGrant: no SMTP_URL configured — skipping email.');
-    return;
-  }
+  if (!mailReady('notifyOnGrant')) return;
 
   // The poster's contact email lives only in the locked sidecar.
   const owner = (await db().doc(`capacityOwners/${after.postId}`).get()).data();
   const to = owner && owner.contactEmail;
   if (!to) {
     console.log('notifyOnGrant: no poster email found for post', after.postId);
+    return;
+  }
+  if (!(await emailAllowedForUser(owner.posterCompanyId))) {
+    console.log('notifyOnGrant: poster opted out of email — skipping.');
     return;
   }
 
@@ -379,28 +613,35 @@ exports.notifyOnGrant = onDocumentWritten('contact_requests/{id}', async (event)
 
   try {
     const transport = nodemailer.createTransport(SMTP_URL);
+    const mail = urgent
+      ? renderEmail({
+          accent: BRAND,
+          emoji: '🔥',
+          eyebrow: 'Dringende Anfrage',
+          heading: 'Ein Unternehmen braucht Sie — schnell',
+          paragraphs: [
+            'Ein Unternehmen hat über Capacify Interesse an einer Ihrer Anzeigen freigeschaltet und als dringend markiert.',
+            'Es wartet jetzt auf eine schnelle Rückmeldung — der beste Moment, um ins Geschäft zu kommen.',
+          ],
+          cta: { label: 'Jetzt antworten', url: APP_URL },
+        })
+      : renderEmail({
+          accent: BRAND,
+          emoji: '🤝',
+          eyebrow: 'Neue Verbindung',
+          heading: 'Sie wurden freigeschaltet',
+          paragraphs: [
+            'Ein Unternehmen hat Interesse an einer Ihrer Anzeigen freigeschaltet und kann Sie jetzt direkt kontaktieren.',
+            'Wer zuerst zurückschreibt, ist im Gespräch — ein kurzer Gruß genügt für den Anfang.',
+          ],
+          cta: { label: 'Zur Vermittlung', url: APP_URL },
+        });
     await transport.sendMail({
       from: MAIL_FROM,
       to,
       subject: urgent ? '🔥 Dringende Vermittlung auf Capacify' : 'Neue Vermittlung auf Capacify',
-      text:
-        'Guten Tag,\n\n' +
-        (urgent
-          ? 'ein Unternehmen hat über Capacify Interesse an einer Ihrer Anzeigen freigeschaltet und als DRINGEND markiert — es benötigt schnell eine Antwort.\n\n'
-          : 'ein Unternehmen hat über Capacify Interesse an einer Ihrer Anzeigen freigeschaltet ' +
-            'und kann Sie nun direkt kontaktieren.\n\n') +
-        'Melden Sie sich an, um zu antworten:\n\n' +
-        `${APP_URL}\n\n` +
-        'Ihr Capacify-Team',
-      html:
-        `<p>Guten Tag,</p>` +
-        (urgent
-          ? `<p>ein Unternehmen hat über <strong>Capacify</strong> Interesse an einer Ihrer Anzeigen freigeschaltet und <strong>als dringend markiert</strong> — es benötigt schnell eine Antwort.</p>`
-          : `<p>ein Unternehmen hat über <strong>Capacify</strong> Interesse an einer Ihrer Anzeigen ` +
-            `freigeschaltet und kann Sie nun direkt kontaktieren.</p>`) +
-        `<p><a href="${APP_URL}" style="background:#FF6B00;color:#fff;padding:10px 18px;` +
-        `border-radius:8px;text-decoration:none;font-weight:700">Zur Vermittlung</a></p>` +
-        `<p style="color:#888;font-size:12px">Ihr Capacify-Team</p>`,
+      text: mail.text,
+      html: mail.html,
     });
     console.log('notifyOnGrant: email sent to poster.');
   } catch (e) {
@@ -409,12 +650,129 @@ exports.notifyOnGrant = onDocumentWritten('contact_requests/{id}', async (event)
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Retention helpers + email templates (German — primary market is Hamburg).
+// Branded email system (German — primary market is Hamburg). ONE responsive,
+// client-safe template — table layout + inline styles, the only thing Outlook /
+// Gmail / Apple Mail reliably render — shared by EVERY email below so they read
+// as one product. renderEmail() returns BOTH the HTML and a plain-text
+// alternative built from the same fields, so the two can never drift.
 // ─────────────────────────────────────────────────────────────────────────────
-const BTN =
-  'background:#FF6B00;color:#fff;padding:10px 18px;border-radius:8px;' +
-  'text-decoration:none;font-weight:700;display:inline-block';
-const FOOT = '<p style="color:#888;font-size:12px">Ihr Capacify-Team</p>';
+const BRAND = '#FF6B00';       // Capacify orange — default accent
+const BRAND_OK = '#16A34A';    // positive events (accepted, verified)
+const BRAND_WARN = '#D97706';  // attention events (verification declined)
+// Solid tints — email clients don't reliably support 8-digit #RRGGBBAA alpha.
+const TINTS = { '#FF6B00': '#FFF1E6', '#16A34A': '#E7F6EC', '#D97706': '#FBF0E0' };
+const tintFor = (accent) => TINTS[accent] || '#FFF1E6';
+
+// Interpolated values (company names, message snippets, capacity lines) are
+// user-authored — escape them before they enter the HTML template. Content is
+// data, not markup.
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// { eyebrow, emoji, heading, paragraphs[], highlight:{label,value}, cta:{label,url},
+//   accent, footerNote, unsubscribeUrl } → { html, text }. Only `heading` is
+//   required. `cta.url` and `unsubscribeUrl` are the fields left un-escaped
+//   (both are ours — APP_URL, a Firebase link, or unsubLinkFor()).
+function renderEmail({ eyebrow, emoji, heading, paragraphs = [], highlight, cta, accent = BRAND, footerNote, unsubscribeUrl }) {
+  const tint = tintFor(accent);
+  const f = 'Arial,Helvetica,sans-serif';
+  const preheader = esc(paragraphs[0] || heading || 'Capacify');
+
+  const bodyHtml = paragraphs
+    .map((p) => `<p style="margin:0 0 14px;font:400 15px/1.65 ${f};color:#3f4652">${esc(p)}</p>`)
+    .join('');
+
+  const highlightHtml = highlight
+    ? `<tr><td style="padding:6px 32px 0">
+         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${tint};border-left:4px solid ${accent};border-radius:8px">
+           <tr><td style="padding:14px 16px">
+             ${highlight.label ? `<div style="font:700 11px/1.4 ${f};letter-spacing:.6px;color:${accent};text-transform:uppercase">${esc(highlight.label)}</div>` : ''}
+             <div style="font:800 16px/1.5 ${f};color:#111;${highlight.label ? 'margin-top:4px' : ''}">${esc(highlight.value)}</div>
+           </td></tr>
+         </table>
+       </td></tr>`
+    : '';
+
+  const ctaHtml = cta
+    ? `<tr><td style="padding:24px 32px 4px">
+         <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+           <td align="center" style="border-radius:10px;background:${accent}">
+             <a href="${cta.url}" style="display:inline-block;padding:14px 30px;font:800 15px/1 ${f};color:#ffffff;text-decoration:none;border-radius:10px">${esc(cta.label)} &nbsp;&rsaquo;</a>
+           </td>
+         </tr></table>
+       </td></tr>`
+    : '';
+
+  const footNoteHtml = footerNote
+    ? `<p style="margin:0 0 10px;font:400 12px/1.6 ${f};color:#9aa1ab">${esc(footerNote)}</p>`
+    : '';
+
+  // Visible opt-out for bulk mail. The List-Unsubscribe header (see
+  // bulkMailFields) is what the mail client acts on, but Gmail's bulk-sender
+  // rules also expect a clearly visible unsubscribe link in the body itself.
+  const unsubHtml = unsubscribeUrl
+    ? `<p style="margin:10px 0 0;font:400 11px/1.6 ${f};color:#aab0bb">
+         <a href="${unsubscribeUrl}" style="color:#8b929d;text-decoration:underline">Keine solchen E-Mails mehr erhalten</a>
+       </p>`
+    : '';
+
+  const html = `<!DOCTYPE html>
+<html lang="de"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light only">
+</head>
+<body style="margin:0;padding:0;background:#eef1f4;-webkit-text-size-adjust:100%">
+<span style="display:none!important;opacity:0;color:transparent;height:0;width:0;overflow:hidden;visibility:hidden">${preheader}</span>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef1f4">
+  <tr><td align="center" style="padding:28px 12px">
+    <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px">
+      <tr><td style="padding:2px 6px 18px">
+        <span style="font:900 22px/1 ${f};color:#111;letter-spacing:-.5px">Capac<span style="color:${BRAND}">ify</span></span>
+        <span style="font:700 12px/1 ${f};color:#9aa1ab;padding-left:8px">Hamburg</span>
+      </td></tr>
+      <tr><td style="background:#ffffff;border:1px solid #e6e9ee;border-radius:16px;overflow:hidden">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+          <tr><td style="height:4px;background:${accent};font-size:0;line-height:0">&nbsp;</td></tr>
+          <tr><td style="padding:30px 32px 0">
+            ${emoji ? `<table role="presentation" cellpadding="0" cellspacing="0"><tr><td align="center" valign="middle" style="width:52px;height:52px;background:${tint};border-radius:14px;font-size:26px;line-height:52px">${emoji}</td></tr></table>` : ''}
+            ${eyebrow ? `<div style="margin:18px 0 6px;font:800 11px/1.4 ${f};letter-spacing:1px;color:${accent};text-transform:uppercase">${esc(eyebrow)}</div>` : '<div style="height:16px;font-size:0;line-height:0">&nbsp;</div>'}
+            <h1 style="margin:0 0 16px;font:800 23px/1.32 ${f};color:#111">${esc(heading)}</h1>
+          </td></tr>
+          <tr><td style="padding:0 32px">${bodyHtml}</td></tr>
+          ${highlightHtml}
+          ${ctaHtml}
+          <tr><td style="padding:16px 32px 34px;font-size:0;line-height:0">&nbsp;</td></tr>
+        </table>
+      </td></tr>
+      <tr><td style="padding:22px 20px 8px;text-align:center">
+        ${footNoteHtml}
+        <p style="margin:0 0 4px;font:700 13px/1.5 ${f};color:#6b7280">Ihr Capacify-Team</p>
+        <p style="margin:0;font:400 11px/1.6 ${f};color:#aab0bb">Capacify &middot; Bau-Kapazit&auml;ten direkt vermittelt &middot; Hamburg</p>
+        ${unsubHtml}
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body></html>`;
+
+  const t = ['Capacify'];
+  if (eyebrow) t.push(`— ${eyebrow.toUpperCase()} —`);
+  t.push('', heading, '');
+  for (const p of paragraphs) t.push(p, '');
+  if (highlight) t.push(`  ${highlight.label ? highlight.label + ': ' : ''}${highlight.value}`, '');
+  if (cta) t.push(`${cta.label}: ${cta.url}`, '');
+  if (footerNote) t.push(footerNote, '');
+  t.push('Ihr Capacify-Team');
+  if (unsubscribeUrl) t.push('', `Keine solchen E-Mails mehr erhalten: ${unsubscribeUrl}`);
+
+  return { html, text: t.join('\n') };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Custom-branded email verification. Firebase Auth's own sendEmailVerification()
@@ -436,7 +794,7 @@ exports.sendVerificationEmail = onCall(async (req) => {
   if (!email) throw new HttpsError('failed-precondition', 'No email on this account.');
   if (req.auth.token.email_verified) return { alreadyVerified: true };
 
-  if (!SMTP_URL) {
+  if (!mailReady('sendVerificationEmail')) {
     throw new HttpsError('failed-precondition', 'Email delivery not configured.');
   }
 
@@ -453,22 +811,23 @@ exports.sendVerificationEmail = onCall(async (req) => {
 
   try {
     const transport = nodemailer.createTransport(SMTP_URL);
+    const mail = renderEmail({
+      accent: BRAND,
+      emoji: '✉️',
+      eyebrow: 'E-Mail bestätigen',
+      heading: 'Nur noch ein Schritt',
+      paragraphs: [
+        'Willkommen bei Capacify! Bitte bestätigen Sie Ihre E-Mail-Adresse, um alle Funktionen freizuschalten — Anzeigen schalten, Kontakte freischalten und Nachrichten senden.',
+      ],
+      cta: { label: 'E-Mail-Adresse bestätigen', url: link },
+      footerNote: 'Falls Sie sich nicht bei Capacify registriert haben, ignorieren Sie diese E-Mail einfach.',
+    });
     await transport.sendMail({
       from: MAIL_FROM,
       to: email,
       subject: 'Bitte bestätigen Sie Ihre E-Mail-Adresse — Capacify',
-      text:
-        'Guten Tag,\n\n' +
-        'bitte bestätigen Sie Ihre E-Mail-Adresse, um Capacify vollständig nutzen zu können:\n\n' +
-        `${link}\n\n` +
-        'Falls Sie sich nicht bei Capacify registriert haben, ignorieren Sie diese E-Mail einfach.\n\n' +
-        'Ihr Capacify-Team',
-      html:
-        `<p>Guten Tag,</p>` +
-        `<p>bitte bestätigen Sie Ihre E-Mail-Adresse, um <strong>Capacify</strong> vollständig nutzen zu können.</p>` +
-        `<p><a href="${link}" style="${BTN}">E-Mail-Adresse bestätigen</a></p>` +
-        `<p style="color:#888;font-size:12px">Falls Sie sich nicht bei Capacify registriert haben, ignorieren Sie diese E-Mail einfach.</p>` +
-        FOOT,
+      text: mail.text,
+      html: mail.html,
     });
     console.log('sendVerificationEmail: sent to', email);
   } catch (e) {
@@ -495,10 +854,7 @@ function capacityLine(cap) {
 // in-app match alerts; together they are the core daily-habit loop.
 // ─────────────────────────────────────────────────────────────────────────────
 exports.notifyOnNewCapacity = onDocumentCreated('capacities/{id}', async (event) => {
-  if (!SMTP_URL) {
-    console.log('notifyOnNewCapacity: no SMTP_URL — skipping.');
-    return;
-  }
+  if (!mailReady('notifyOnNewCapacity')) return;
   const snap = event.data;
   if (!snap) return;
   const cap = snap.data();
@@ -533,38 +889,43 @@ exports.notifyOnNewCapacity = onDocumentCreated('capacities/{id}', async (event)
     if (!typeOk || !crewOk) continue;
 
     const co = (await db().doc(`companies/${ownerId}`).get()).data();
-    if (!co || co.emailOptIn !== true || !co.email) continue;
-    recipients.set(ownerId, co.email);
+    if (!co || co.emailOptIn !== true) continue;
+    const ownerEmail = await companyNotifyEmail(ownerId, co);
+    if (!ownerEmail) continue;
+    recipients.set(ownerId, ownerEmail);
   }
   if (recipients.size === 0) return;
+  warnIfUnsignedBulk('notifyOnNewCapacity');
 
   const transport = nodemailer.createTransport(SMTP_URL);
   const line = capacityLine(cap);
   let sent = 0;
-  for (const [, email] of recipients) {
+  for (const [ownerId, email] of recipients) {
     if (sent >= 200) break; // safety cap
+    if (!(await emailAllowedForUser(ownerId))) continue; // master email switch
     try {
+      const mail = renderEmail({
+        accent: BRAND,
+        emoji: '⚡',
+        eyebrow: 'Neu in Ihrem Gewerk',
+        heading: 'Das könnte für Sie passen',
+        paragraphs: [
+          'Soeben wurde eine neue Kapazität eingestellt, die zu Ihrer gespeicherten Suche passt.',
+          'Ein Blick lohnt sich — und wer zuerst schreibt, ist im Gespräch.',
+        ],
+        highlight: { label: 'Neue Kapazität', value: line },
+        cta: { label: 'Kapazität ansehen', url: APP_URL },
+        footerNote: 'Sie erhalten diese E-Mail, weil Sie Benachrichtigungen aktiviert haben — in den Einstellungen jederzeit abstellbar.',
+        unsubscribeUrl: unsubLinkFor(ownerId),
+      });
+      // ENGAGEMENT mail → carries the one-click unsubscribe headers.
       await transport.sendMail({
         from: MAIL_FROM,
         to: email,
         subject: 'Neue passende Kapazität auf Capacify',
-        text:
-          'Guten Tag,\n\n' +
-          'in Ihrem Gewerk wurde soeben eine neue Kapazität eingestellt:\n\n' +
-          `${line}\n\n` +
-          'Jetzt ansehen und direkt eine Nachricht senden:\n' +
-          `${APP_URL}\n\n` +
-          'Ihr Capacify-Team\n\n' +
-          '— Sie erhalten diese E-Mail, weil Sie Benachrichtigungen aktiviert haben. ' +
-          'In den Einstellungen können Sie sie jederzeit abstellen.',
-        html:
-          `<p>Guten Tag,</p>` +
-          `<p>in Ihrem Gewerk wurde soeben eine neue Kapazität eingestellt:</p>` +
-          `<p style="font-size:16px;font-weight:700">${line}</p>` +
-          `<p><a href="${APP_URL}" style="${BTN}">Kapazität ansehen</a></p>` +
-          FOOT +
-          `<p style="color:#aaa;font-size:11px">Sie erhalten diese E-Mail, weil Sie ` +
-          `Benachrichtigungen aktiviert haben. In den Einstellungen abstellbar.</p>`,
+        text: mail.text,
+        html: mail.html,
+        ...bulkMailFields(ownerId),
       });
       sent++;
     } catch (e) {
@@ -584,10 +945,7 @@ exports.notifyOnNewCapacity = onDocumentCreated('capacities/{id}', async (event)
 exports.weeklyDigest = onSchedule(
   { schedule: 'every monday 08:00', timeZone: 'Europe/Berlin' },
   async () => {
-    if (!SMTP_URL) {
-      console.log('weeklyDigest: no SMTP_URL — skipping.');
-      return;
-    }
+    if (!mailReady('weeklyDigest')) return;
     const weekAgo = admin.firestore.Timestamp.fromMillis(
       Date.now() - 7 * 24 * 3600 * 1000
     );
@@ -616,13 +974,16 @@ exports.weeklyDigest = onSchedule(
       .where('emailOptIn', '==', true)
       .get();
     if (companies.empty) return;
+    warnIfUnsignedBulk('weeklyDigest');
 
     const transport = nodemailer.createTransport(SMTP_URL);
     let sent = 0;
     for (const c of companies.docs) {
       if (sent >= 2000) break; // safety cap
       const cd = c.data();
-      if (!cd.email) continue;
+      const digestTo = await companyNotifyEmail(c.id, cd);
+      if (!digestTo) continue;
+      if (!(await emailAllowedForUser(c.id))) continue; // master email switch
       const trades = Array.isArray(cd.trades) ? cd.trades : [];
       const mine = trades.length
         ? trades.reduce((n, t) => n + (byTrade[t] || 0), 0)
@@ -633,24 +994,26 @@ exports.weeklyDigest = onSchedule(
         ? `In Ihren Gewerken gab es diese Woche ${mine} neue Kapazität(en).`
         : `Diese Woche gab es ${total} neue Kapazität(en) auf dem Markt.`;
       try {
+        const mail = renderEmail({
+          accent: BRAND,
+          emoji: '📊',
+          eyebrow: 'Ihr Wochenüberblick',
+          heading: headline,
+          paragraphs: [
+            'Sehen Sie, wer gerade Kapazitäten sucht oder anbietet — und sichern Sie sich die passenden Kontakte, bevor es andere tun.',
+          ],
+          cta: { label: 'Zum Marktplatz', url: APP_URL },
+          footerNote: 'Diesen Wochenüberblick können Sie in den Einstellungen jederzeit abstellen.',
+          unsubscribeUrl: unsubLinkFor(c.id),
+        });
+        // ENGAGEMENT mail → carries the one-click unsubscribe headers.
         await transport.sendMail({
           from: MAIL_FROM,
-          to: cd.email,
+          to: digestTo,
           subject: 'Ihr Capacify-Wochenüberblick',
-          text:
-            'Guten Tag,\n\n' +
-            `${headline}\n\n` +
-            'Sehen Sie, wer gerade Kapazitäten sucht oder anbietet:\n' +
-            `${APP_URL}\n\n` +
-            'Ihr Capacify-Team\n\n' +
-            '— In den Einstellungen können Sie diese E-Mails jederzeit abstellen.',
-          html:
-            `<p>Guten Tag,</p>` +
-            `<p style="font-size:16px;font-weight:700">${headline}</p>` +
-            `<p>Sehen Sie, wer gerade Kapazitäten sucht oder anbietet.</p>` +
-            `<p><a href="${APP_URL}" style="${BTN}">Zum Marktplatz</a></p>` +
-            FOOT +
-            `<p style="color:#aaa;font-size:11px">In den Einstellungen abstellbar.</p>`,
+          text: mail.text,
+          html: mail.html,
+          ...bulkMailFields(c.id),
         });
         sent++;
       } catch (e) {
@@ -777,10 +1140,7 @@ exports.stampFirstCollabConfirm = onDocumentWritten({ document: 'contact_request
 exports.collabConfirmNudge = onSchedule(
   { schedule: 'every day 09:00', timeZone: 'Europe/Berlin' },
   async () => {
-    if (!SMTP_URL) {
-      console.log('collabConfirmNudge: no SMTP_URL — skipping.');
-      return;
-    }
+    if (!mailReady('collabConfirmNudge')) return;
     const NUDGE_AFTER_DAYS = 2;
     const cutoff = admin.firestore.Timestamp.fromMillis(
       Date.now() - NUDGE_AFTER_DAYS * 24 * 3600 * 1000
@@ -801,27 +1161,32 @@ exports.collabConfirmNudge = onSchedule(
       if (!nudgeCompanyId) continue;
 
       const companySnap = await db().collection('companies').doc(nudgeCompanyId).get();
-      if (!companySnap.exists || !companySnap.data().email) continue;
-      const to = companySnap.data().email;
+      if (!companySnap.exists) continue;
+      const to = await companyNotifyEmail(nudgeCompanyId, companySnap.data());
+      if (!to) continue;
 
       try {
-        const transport = nodemailer.createTransport(SMTP_URL);
-        await transport.sendMail({
-          from: MAIL_FROM,
-          to,
-          subject: 'Zusammenarbeit bestätigen?',
-          text:
-            'Guten Tag,\n\n' +
-            'Ihr Verbindungspartner hat bereits bestätigt, dass die Zusammenarbeit stattgefunden hat. ' +
-            'Bitte bestätigen Sie ebenfalls, damit sie für beide als abgeschlossen zählt.\n\n' +
-            `${APP_URL}\n\nIhr Capacify-Team`,
-          html:
-            `<p>Guten Tag,</p>` +
-            `<p>Ihr Verbindungspartner hat bereits bestätigt, dass die Zusammenarbeit stattgefunden hat. ` +
-            `Bitte bestätigen Sie ebenfalls, damit sie für beide als abgeschlossen zählt.</p>` +
-            `<p><a href="${APP_URL}" style="${BTN}">Jetzt bestätigen</a></p>` +
-            FOOT,
-        });
+        if (await emailAllowedForUser(nudgeCompanyId)) {
+          const transport = nodemailer.createTransport(SMTP_URL);
+          const mail = renderEmail({
+            accent: BRAND,
+            emoji: '🤝',
+            eyebrow: 'Fast geschafft',
+            heading: 'Bestätigen Sie Ihre Zusammenarbeit',
+            paragraphs: [
+              'Ihr Verbindungspartner hat bereits bestätigt, dass die Zusammenarbeit stattgefunden hat.',
+              'Mit Ihrer Bestätigung zählt sie für beide als abgeschlossen — das stärkt Ihr Profil und Ihre Sichtbarkeit auf Capacify.',
+            ],
+            cta: { label: 'Jetzt bestätigen', url: APP_URL },
+          });
+          await transport.sendMail({
+            from: MAIL_FROM,
+            to,
+            subject: 'Zusammenarbeit bestätigen?',
+            text: mail.text,
+            html: mail.html,
+          });
+        }
         await sendPushToUser(nudgeCompanyId, {
           title: 'Zusammenarbeit bestätigen?',
           body: 'Ihr Partner wartet auf Ihre Bestätigung.',
@@ -841,6 +1206,147 @@ exports.collabConfirmNudge = onSchedule(
       }
     }
     console.log(`collabConfirmNudge: ${sent} nudge(s) sent.`);
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pending-request nudge (#4). A message-first Anonymous request sits in 'pending'
+// until the poster Accepts/Declines; if the poster never opens Anfragen the
+// requester waits indefinitely and the platform's core promise silently stalls.
+// Daily sweep: any 'pending' request older than 24h that hasn't been nudged pings
+// the poster once (push + email + in-app). Mirrors collabConfirmNudge's one-shot
+// pattern (pendingNudgeSentAt guards repeats). Filtered on status only (no
+// composite index needed); age checked in memory. The pendingNudgeSentAt write
+// re-triggers the onDocumentWritten contact_requests handlers, but each no-ops
+// (status is unchanged, still 'pending').
+// ─────────────────────────────────────────────────────────────────────────────
+exports.pendingRequestNudge = onSchedule(
+  { schedule: 'every day 10:00', timeZone: 'Europe/Berlin' },
+  async () => {
+    const NUDGE_AFTER_MS = 24 * 3600 * 1000;
+    const now = Date.now();
+    const pending = await db()
+      .collection('contact_requests')
+      .where('status', '==', 'pending')
+      .get();
+
+    let sent = 0;
+    for (const doc of pending.docs) {
+      const r = doc.data();
+      if (r.pendingNudgeSentAt) continue; // one-time only
+      if (!r.createdAt || now - r.createdAt.toMillis() < NUDGE_AFTER_MS) continue;
+
+      // Pending Anonymous requests carry no posterCompanyId — resolve via the
+      // locked owner sidecar (readable here; Admin SDK bypasses rules).
+      const ownerSnap = await db().doc(`capacityOwners/${r.postId}`).get();
+      if (!ownerSnap.exists) continue;
+      const posterId = ownerSnap.data().posterCompanyId;
+      if (!posterId) continue;
+
+      await db().collection('notifications').doc().set({
+        recipientId: posterId,
+        type: 'request_pending_nudge',
+        read: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        requestId: doc.id,
+      });
+
+      const userSnap = await db().collection('users').doc(posterId).get();
+      if (!userSnap.exists || userSnap.data().notifyOnNewMessage !== false) {
+        await sendPushToUser(posterId, {
+          title: 'Anfrage wartet auf Antwort',
+          body: 'Ein Unternehmen wartet seit über einem Tag auf Ihre Antwort.',
+          data: { type: 'request_pending_nudge', requestId: doc.id },
+        });
+      }
+
+      if (mailReady('pendingRequestNudge') && (await emailAllowedForUser(posterId))) {
+        const companySnap = await db().collection('companies').doc(posterId).get();
+        const to = await companyNotifyEmail(
+          posterId, companySnap.exists ? companySnap.data() : null);
+        if (to) {
+          try {
+            const transport = nodemailer.createTransport(SMTP_URL);
+            const mail = renderEmail({
+              accent: BRAND,
+              emoji: '⏰',
+              eyebrow: 'Wartet auf Sie',
+              heading: 'Eine Anfrage wartet auf Ihre Antwort',
+              paragraphs: [
+                'Ein Unternehmen hat Ihnen vor über einem Tag eine Anfrage geschickt und wartet noch auf Ihre Rückmeldung.',
+                'Eine schnelle Antwort erhöht Ihre Abschlusschance spürbar — und verbessert Ihre Antwortzeit auf dem Profil.',
+              ],
+              cta: { label: 'Anfrage ansehen', url: APP_URL },
+            });
+            await transport.sendMail({
+              from: MAIL_FROM,
+              to,
+              subject: 'Eine Anfrage wartet auf Ihre Antwort — Capacify',
+              text: mail.text,
+              html: mail.html,
+            });
+          } catch (e) {
+            console.error('pendingRequestNudge: email send failed', e);
+          }
+        }
+      }
+
+      await doc.ref.set(
+        { pendingNudgeSentAt: admin.firestore.FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+      sent++;
+    }
+    console.log(`pendingRequestNudge: ${sent} nudge(s) sent.`);
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// M5 — orphan-post sweep. An anonymous post's identity lives ONLY in its
+// capacityOwners/{id} sidecar (see firestore.rules), written in the SAME
+// batch as the post itself. If that batch ever partially lands (client
+// crash mid-write, a revoked permission between the two writes, etc.) the
+// resulting post is "contactless and harmless" by rules design — no identity
+// to reveal, no accept/reveal ever possible — but still clutters the public
+// feed with a listing nobody can ever respond to. Daily sweep deletes any
+// capacities doc older than the 1h grace period with no matching sidecar;
+// the grace period is generous so this can never race a legitimate
+// in-flight create (the two writes land within the same batch commit, i.e.
+// milliseconds apart). Capped per run and batched in chunks of 400 (under
+// Firestore's 500-writes-per-batch ceiling) — a run that hits the cap just
+// finishes the rest on the next day's run.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.sweepOrphanPosts = onSchedule(
+  { schedule: 'every day 03:00', timeZone: 'Europe/Berlin' },
+  async () => {
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+    const cutoff = admin.firestore.Timestamp.fromMillis(Date.now() - ONE_HOUR_MS);
+
+    const snap = await db()
+      .collection('capacities')
+      .where('createdAt', '<=', cutoff)
+      .limit(2000)
+      .get();
+    if (snap.empty) return;
+
+    let deleted = 0;
+    let batch = db().batch();
+    let inBatch = 0;
+
+    for (const doc of snap.docs) {
+      const ownerSnap = await db().doc(`capacityOwners/${doc.id}`).get();
+      if (ownerSnap.exists) continue;
+      batch.delete(doc.ref);
+      inBatch++;
+      deleted++;
+      if (inBatch >= 400) {
+        await batch.commit();
+        batch = db().batch();
+        inBatch = 0;
+      }
+    }
+    if (inBatch > 0) await batch.commit();
+    console.log(`sweepOrphanPosts: deleted ${deleted} orphan post(s) out of ${snap.size} checked.`);
   }
 );
 
@@ -922,6 +1428,24 @@ async function notifyAdmins({ type, pushTitle, pushBody, ...fields }) {
 // ─────────────────────────────────────────────────────────────────────────────
 const MESSAGE_EMAIL_DEBOUNCE_MS = 10 * 60 * 1000;
 
+// Response-time bands — MUST stay in sync with CapacityModel.bandResponseHours
+// in lib/core/models/capacity_model.dart. An exact hour figure on a
+// world-readable post is one more field an anonymous post can be joined on
+// against the public companies collection, so the value is raised to the next
+// band ceiling (3h → 4h) before it is stored. Rounding up never claims a
+// poster is faster than they are.
+const RESPONSE_HOUR_BANDS = [2, 4, 8, 24, 48, 72];
+
+function bandResponseHours(hours) {
+  if (hours === null || hours === undefined) return null;
+  for (const band of RESPONSE_HOUR_BANDS) {
+    if (hours <= band) return band;
+  }
+  // Past the last band, round up to whole days rather than pinning to a fixed
+  // ceiling — a fixed cap would understate anyone slower than it.
+  return Math.ceil(hours / 24) * 24;
+}
+
 // Pushes an updated posterAvgResponseHours onto every one of a poster's own
 // active posts — mirrors contact_request_service.dart's Dart
 // _syncResponseStatToPosts exactly, so the two response-time paths (Accept-
@@ -936,12 +1460,13 @@ async function syncResponseStatToPosts(posterCompanyId, avgHours) {
       .limit(500)
       .get();
     if (owned.empty) return;
+    const banded = bandResponseHours(avgHours);
     const batch = db().batch();
     owned.forEach((doc) => {
       batch.update(db().collection('capacities').doc(doc.id), {
-        posterAvgResponseHours: avgHours === null || avgHours === undefined
+        posterAvgResponseHours: banded === null
           ? admin.firestore.FieldValue.delete()
-          : avgHours,
+          : banded,
       });
     });
     await batch.commit();
@@ -1036,7 +1561,9 @@ exports.onNewMessage = onDocumentCreated({ document: 'chats/{chatId}/messages/{m
     data: { type: 'new_message', chatId },
   });
 
-  if (!SMTP_URL) return;
+  if (!mailReady('onNewMessage')) return;
+  // Master email switch (recipientUserSnap already fetched above — no extra read).
+  if (recipientUserSnap.exists && recipientUserSnap.data().notifyByEmail === false) return;
 
   const chatRef = db().doc(`chats/${chatId}`);
   const chatSnap = await chatRef.get();
@@ -1045,27 +1572,29 @@ exports.onNewMessage = onDocumentCreated({ document: 'chats/{chatId}/messages/{m
   if (Date.now() - lastSent < MESSAGE_EMAIL_DEBOUNCE_MS) return;
 
   const recipientCompanySnap = await db().collection('companies').doc(recipientId).get();
-  const to = recipientCompanySnap.exists ? recipientCompanySnap.data().email : null;
+  const to = await companyNotifyEmail(
+    recipientId, recipientCompanySnap.exists ? recipientCompanySnap.data() : null);
   if (!to) return;
 
   try {
     const transport = nodemailer.createTransport(SMTP_URL);
+    const mail = renderEmail({
+      accent: BRAND,
+      emoji: '💬',
+      eyebrow: 'Neue Nachricht',
+      heading: senderName ? `${senderName} hat Ihnen geschrieben` : 'Sie haben eine neue Nachricht',
+      paragraphs: [
+        `${senderName || 'Ein Unternehmen'} hat Ihnen auf Capacify eine Nachricht gesendet. Antworten Sie direkt im Chat, um im Gespräch zu bleiben.`,
+      ],
+      cta: { label: 'Nachricht ansehen', url: APP_URL },
+      footerNote: 'Nachrichten-Benachrichtigungen können Sie in den Einstellungen abstellen.',
+    });
     await transport.sendMail({
       from: MAIL_FROM,
       to,
-      subject: 'Neue Nachricht auf Capacify',
-      text:
-        'Guten Tag,\n\n' +
-        `${senderName || 'Ein Unternehmen'} hat Ihnen auf Capacify eine Nachricht geschrieben.\n\n` +
-        `${APP_URL}\n\n` +
-        'Ihr Capacify-Team\n\n' +
-        '— In den Einstellungen können Sie diese E-Mails jederzeit abstellen.',
-      html:
-        `<p>Guten Tag,</p>` +
-        `<p><strong>${senderName || 'Ein Unternehmen'}</strong> hat Ihnen auf Capacify eine Nachricht geschrieben.</p>` +
-        `<p><a href="${APP_URL}" style="${BTN}">Nachricht ansehen</a></p>` +
-        FOOT +
-        `<p style="color:#aaa;font-size:11px">In den Einstellungen abstellbar.</p>`,
+      subject: senderName ? `Neue Nachricht von ${senderName} — Capacify` : 'Neue Nachricht auf Capacify',
+      text: mail.text,
+      html: mail.html,
     });
     await chatRef.update({ [`notifiedEmailAt.${recipientId}`]: admin.firestore.FieldValue.serverTimestamp() });
   } catch (e) {
@@ -1126,29 +1655,116 @@ exports.onNewContactRequest = onDocumentCreated({ document: 'contact_requests/{i
   // Auto-granted + urgent: notifyOnGrant already sends one merged email
   // carrying the urgency line for this exact event — sending this SEPARATE
   // urgent email too would double-email the poster for one event.
-  if (!SMTP_URL || !urgent || autoGranted) return;
+  if (!urgent || autoGranted || !mailReady('onNewContactRequest')) return;
+  // Master email switch (posterUserSnap already fetched above — no extra read).
+  if (posterUserSnap.exists && posterUserSnap.data().notifyByEmail === false) return;
 
   const to = ownerSnap.data().contactEmail;
   if (!to) return;
   try {
     const transport = nodemailer.createTransport(SMTP_URL);
+    const mail = renderEmail({
+      accent: BRAND,
+      emoji: '🔥',
+      eyebrow: 'Dringende Anfrage',
+      heading: 'Dringende Anfrage erhalten',
+      paragraphs: [
+        'Ein Unternehmen hat Ihnen eine als dringend markierte Anfrage geschickt und benötigt schnell eine Antwort.',
+        'Je schneller Sie reagieren, desto größer die Chance auf den Zuschlag.',
+      ],
+      cta: { label: 'Anfrage ansehen', url: APP_URL },
+    });
     await transport.sendMail({
       from: MAIL_FROM,
       to,
       subject: '🔥 Dringende Anfrage auf Capacify',
-      text:
-        'Guten Tag,\n\n' +
-        'ein Unternehmen hat Ihnen eine als DRINGEND markierte Anfrage geschickt und benötigt schnell eine Antwort.\n\n' +
-        `${APP_URL}\n\n` +
-        'Ihr Capacify-Team',
-      html:
-        `<p>Guten Tag,</p>` +
-        `<p>ein Unternehmen hat Ihnen eine <strong>als dringend markierte</strong> Anfrage geschickt und benötigt schnell eine Antwort.</p>` +
-        `<p><a href="${APP_URL}" style="${BTN}">Anfrage ansehen</a></p>` +
-        FOOT,
+      text: mail.text,
+      html: mail.html,
     });
   } catch (e) {
     console.error('onNewContactRequest: urgent email send failed', e);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Request-ACCEPTED notification (#1). Closes the REQUESTER's loop: notifyOnGrant
+// above emails the POSTER when a connection reveals them, but the requester who
+// sent a message and is waiting on an Anonymous post's Accept had no proactive
+// signal it went through. Fires ONLY on a genuine pending→granted transition (a
+// poster Accept) — never on an auto-granted (visible/discreet) request, which is
+// created already 'granted' (before == null) and whose requester opened the chat
+// themselves in the same action.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.onRequestAccepted = onDocumentWritten({ document: 'contact_requests/{id}', maxInstances: 20 }, async (event) => {
+  const before = event.data && event.data.before && event.data.before.data();
+  const after = event.data && event.data.after && event.data.after.data();
+  if (!after) return;
+  const becameGranted = after.status === 'granted' && before && before.status !== 'granted';
+  if (!becameGranted) return;
+
+  const requesterId = after.requesterCompanyId;
+  if (!requesterId) return;
+
+  // The poster's public name for the copy (posterCompanyId is stamped on accept).
+  const posterId = after.posterCompanyId;
+  const posterSnap = posterId ? await db().collection('companies').doc(posterId).get() : null;
+  const posterName = posterSnap && posterSnap.exists ? (posterSnap.data().name || '') : '';
+
+  await db().collection('notifications').doc().set({
+    recipientId: requesterId,
+    type: 'request_accepted',
+    read: false,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    requestId: event.params.id,
+    chatId: event.params.id, // chatId == request id — lets the tile open the chat
+    postId: after.postId || '',
+    companyId: posterId || '',
+    companyName: posterName,
+  });
+
+  // Push gated on the requester's message preference — same "someone reached me"
+  // category as onNewMessage / onNewContactRequest.
+  const userSnap = await db().collection('users').doc(requesterId).get();
+  const notifyOnNewMessage = !userSnap.exists || userSnap.data().notifyOnNewMessage !== false;
+  if (notifyOnNewMessage) {
+    await sendPushToUser(requesterId, {
+      title: 'Anfrage angenommen',
+      body: posterName
+        ? `${posterName} hat Ihre Anfrage angenommen — jetzt chatten.`
+        : 'Ihre Anfrage wurde angenommen — jetzt chatten.',
+      data: { type: 'request_accepted', chatId: event.params.id },
+    });
+  }
+
+  // Transactional email, gated on the master switch.
+  if (!mailReady('onRequestAccepted')) return;
+  if (!(await emailAllowedForUser(requesterId))) return;
+  const companySnap = await db().collection('companies').doc(requesterId).get();
+  const to = await companyNotifyEmail(
+    requesterId, companySnap.exists ? companySnap.data() : null);
+  if (!to) return;
+  try {
+    const transport = nodemailer.createTransport(SMTP_URL);
+    const mail = renderEmail({
+      accent: BRAND_OK,
+      emoji: '🎉',
+      eyebrow: 'Anfrage angenommen',
+      heading: posterName ? `${posterName} hat Ihre Anfrage angenommen` : 'Ihre Anfrage wurde angenommen',
+      paragraphs: [
+        'Gute Neuigkeiten — Ihre Anfrage wurde angenommen. Sie können jetzt direkt Kontakt aufnehmen und die Details klären.',
+        'Ein kurzer erster Gruß im Chat bringt das Gespräch am schnellsten in Fahrt.',
+      ],
+      cta: { label: 'Zum Chat', url: APP_URL },
+    });
+    await transport.sendMail({
+      from: MAIL_FROM,
+      to,
+      subject: 'Ihre Anfrage wurde angenommen — Capacify',
+      text: mail.text,
+      html: mail.html,
+    });
+  } catch (e) {
+    console.error('onRequestAccepted: email send failed', e);
   }
 });
 
@@ -1206,6 +1822,88 @@ exports.onVerificationSubmitted = onDocumentWritten('companies/{id}', async (eve
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Verification-RESULT notification (#2). onVerificationSubmitted above tells the
+// ADMINS a review is pending; this tells the COMPANY the outcome once an admin
+// approves ('verified') or rejects ('rejected') — the badge is the whole trust
+// system, so the company shouldn't have to re-open their profile to learn it
+// landed. verifyMyCompany's VIES path only ever sets 'pending', so a 'verified'
+// or 'rejected' transition here always reflects a human decision.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.onVerificationResult = onDocumentWritten({ document: 'companies/{id}', maxInstances: 20 }, async (event) => {
+  const before = event.data && event.data.before && event.data.before.data();
+  const after = event.data && event.data.after && event.data.after.data();
+  if (!after) return;
+  const prev = before ? before.verificationStatus : null;
+  const cur = after.verificationStatus;
+  const becameVerified = cur === 'verified' && prev !== 'verified';
+  const becameRejected = cur === 'rejected' && prev !== 'rejected';
+  if (!becameVerified && !becameRejected) return;
+
+  const companyId = event.params.id;
+  const outcome = becameVerified ? 'verified' : 'rejected';
+
+  await db().collection('notifications').doc().set({
+    recipientId: companyId,
+    type: 'verification_result',
+    read: false,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    companyId,
+    companyName: after.name || '',
+    outcome,
+  });
+
+  await sendPushToUser(companyId, {
+    title: becameVerified ? 'Verifizierung bestätigt' : 'Verifizierung abgelehnt',
+    body: becameVerified
+      ? 'Ihr Unternehmen ist jetzt verifiziert.'
+      : 'Ihre Verifizierung konnte nicht bestätigt werden. Bitte prüfen Sie Ihre Angaben.',
+    data: { type: 'verification_result', outcome },
+  });
+
+  if (!mailReady('onVerificationResult')) return;
+  if (!(await emailAllowedForUser(companyId))) return;
+  const to = await companyNotifyEmail(companyId, after);
+  if (!to) return;
+  try {
+    const transport = nodemailer.createTransport(SMTP_URL);
+    const mail = becameVerified
+      ? renderEmail({
+          accent: BRAND_OK,
+          emoji: '✅',
+          eyebrow: 'Verifiziert',
+          heading: 'Ihr Unternehmen ist verifiziert',
+          paragraphs: [
+            'Herzlichen Glückwunsch! Ihr Unternehmen wurde erfolgreich verifiziert.',
+            'Das Verifiziert-Abzeichen ist ab sofort auf Ihrem Profil sichtbar — es schafft Vertrauen und hebt Sie bei potenziellen Partnern hervor.',
+          ],
+          cta: { label: 'Zum Profil', url: APP_URL },
+        })
+      : renderEmail({
+          accent: BRAND_WARN,
+          emoji: '⚠️',
+          eyebrow: 'Verifizierung',
+          heading: 'Verifizierung nicht bestätigt',
+          paragraphs: [
+            'Ihre Verifizierung konnte leider nicht bestätigt werden.',
+            'Bitte überprüfen Sie Ihre Unternehmensangaben — insbesondere die USt-IdNr. — und starten Sie die Verifizierung anschließend erneut.',
+          ],
+          cta: { label: 'Angaben prüfen', url: APP_URL },
+        });
+    await transport.sendMail({
+      from: MAIL_FROM,
+      to,
+      subject: becameVerified
+        ? 'Ihr Unternehmen ist verifiziert — Capacify'
+        : 'Ihre Verifizierung — Capacify',
+      text: mail.text,
+      html: mail.html,
+    });
+  } catch (e) {
+    console.error('onVerificationResult: email send failed', e);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Trust integrity — SERVER-SIDE moderation enforcement. content_moderation.dart's
 // shouldFlagDescription() only runs in the Flutter client before a save; a
 // direct authenticated write to the Firestore REST/gRPC API (trivial with any
@@ -1233,6 +1931,41 @@ exports.enforceCapacityModeration = onDocumentWritten({ document: 'capacities/{i
     await event.data.after.ref.set({ contentFlagged: true }, { merge: true });
     console.log(`enforceCapacityModeration: flagged ${event.params.id}.`);
   }
+});
+
+// H2 — sequential deal numbers used to be assigned by the CLIENT, drawing
+// from counters/deals via a rule that only checked "value == resource.value
+// + 1". That let any signed-in account bump the shared counter directly
+// (repeated +1 writes with no tie to a real deal closure) — corrupting/
+// inflating the sequence and making counters/deals a write-contention
+// hotspot every real closure also had to contend with. Moved server-side:
+// the client now only sets status:'closed' (still gated to the post's owner
+// by the capacities update rule), and THIS trigger — Admin SDK, bypasses
+// rules — is what actually draws the next number, in its own transaction,
+// the moment a capacity's status lands on 'closed' for the first time.
+// dealNumber is now pinned unchanged in the owner's own capacities update
+// branch (see firestore.rules) and counters/deals is closed to all client
+// writes, so this trigger is the only path to either field.
+exports.assignDealNumber = onDocumentWritten({ document: 'capacities/{id}', maxInstances: 20 }, async (event) => {
+  const after = event.data && event.data.after && event.data.after.data();
+  if (!after) return;
+  if (after.status !== 'closed') return;
+  if (after.dealNumber != null) return; // already numbered — keeps it stable across reopen/re-close
+
+  const capacityRef = event.data.after.ref;
+  const counterRef = db().collection('counters').doc('deals');
+
+  await db().runTransaction(async (tx) => {
+    const [capacitySnap, counterSnap] = await Promise.all([tx.get(capacityRef), tx.get(counterRef)]);
+    const capacityData = capacitySnap.data();
+    if (!capacityData || capacityData.status !== 'closed' || capacityData.dealNumber != null) return;
+
+    const nextNumber = ((counterSnap.data() || {}).value || 0) + 1;
+    tx.set(counterRef, { value: nextNumber });
+    tx.update(capacityRef, { dealNumber: nextNumber });
+  });
+
+  console.log(`assignDealNumber: numbered ${event.params.id}.`);
 });
 
 // Same enforcement for companies (name/description/certifications), PLUS
@@ -1284,25 +2017,36 @@ exports.enforceCompanyIntegrity = onDocumentWritten({ document: 'companies/{id}'
 
   // Duplicate VAT — the same real business's VAT number registered against a
   // second account (one honest company with two logins, or one actor running
-  // a sock-puppet pair under a real number they don't control). vatNumber
-  // isn't stored pre-normalized, so compare on a normalized copy in memory
-  // rather than relying on an exact-match Firestore query.
+  // a sock-puppet pair under a real number they don't control).
+  // H4 fix: this used to pull EVERY vatValid:true company and normalize+
+  // compare each one's vatNumber in memory — an O(n) full scan of the
+  // verified set on every profile edit that touched name/VAT, growing with
+  // the platform. verifyMyCompany now stamps vatNumberNormalized on every
+  // successful VIES check, so this can be a single equality query instead.
+  // Docs verified before this field existed self-heal below the first time
+  // they go through this trigger again.
   const vatChanged = !before || before.vatNumber !== after.vatNumber || before.vatValid !== after.vatValid;
   if (vatChanged && after.vatValid === true && after.vatNumber) {
     const normalized = String(after.vatNumber).toUpperCase().replace(/\s/g, '');
-    const verified = await db().collection('companies').where('vatValid', '==', true).get();
-    for (const doc of verified.docs) {
-      if (doc.id === companyId) continue;
-      const otherVat = String(doc.data().vatNumber || '').toUpperCase().replace(/\s/g, '');
-      if (otherVat && otherVat === normalized) {
-        await event.data.after.ref.set({
-          contentFlagged: true,
-          flagReason: 'duplicate_vat',
-          flagDetail: doc.data().name || '',
-        }, { merge: true });
-        console.log(`enforceCompanyIntegrity: flagged ${companyId} (VAT also used by "${doc.data().name || doc.id}").`);
-        return;
-      }
+    const candidates = await db().collection('companies')
+      .where('vatNumberNormalized', '==', normalized)
+      .get();
+    const dupe = candidates.docs.find((doc) => doc.id !== companyId && doc.data().vatValid === true);
+    if (dupe) {
+      await event.data.after.ref.set({
+        contentFlagged: true,
+        flagReason: 'duplicate_vat',
+        flagDetail: dupe.data().name || '',
+        vatNumberNormalized: normalized,
+      }, { merge: true });
+      console.log(`enforceCompanyIntegrity: flagged ${companyId} (VAT also used by "${dupe.data().name || dupe.id}").`);
+      return;
+    }
+    // Self-heal: keep the index field in sync for docs that predate it or
+    // were edited directly. Only fires when it's actually stale, so it
+    // doesn't re-trigger itself (vatChanged is false on the resulting write).
+    if (after.vatNumberNormalized !== normalized) {
+      await event.data.after.ref.set({ vatNumberNormalized: normalized }, { merge: true });
     }
   }
 });
@@ -1397,6 +2141,30 @@ exports.onRatingWrite = onDocumentWritten({ document: 'companyRatings/{id}', max
       companyName: after.ratedCompanyName || '',
       pushTitle: 'Neue Bewertung zur Freigabe',
       pushBody: after.ratedCompanyName || '',
+    });
+  }
+
+  // #3 — tell the RATED company when their review goes live (status → approved).
+  // Only on the transition into 'approved', so a later edit/recompute doesn't
+  // re-notify. Push + in-app only (a low-value email path we deliberately skip).
+  const becameApproved = after && after.status === 'approved' && (!before || before.status !== 'approved');
+  if (becameApproved) {
+    await db().collection('notifications').doc().set({
+      recipientId: companyId,
+      type: 'rating_approved',
+      read: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      companyId,
+      companyName: after.ratedCompanyName || '',
+      ratingId: event.params.id,
+      rating: typeof after.rating === 'number' ? after.rating : 0,
+    });
+    await sendPushToUser(companyId, {
+      title: 'Neue Bewertung',
+      body: after.rating
+        ? `Sie haben eine neue Bewertung erhalten: ${after.rating}/5 Sternen.`
+        : 'Sie haben eine neue Bewertung erhalten.',
+      data: { type: 'rating_approved' },
     });
   }
 });

@@ -17,20 +17,55 @@ class InvalidLogoFileException implements Exception {
 class CompanyService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  // Create a new company
+  // Create a new company. Two documents, one batch: the public profile and the
+  // gated contact sidecar (see CompanyModel.toContactFirestore). Batched so a
+  // company can never end up published without its contact block, or the other
+  // way round.
   Future<void> createCompany(CompanyModel company) async {
-    await _firestore
-        .collection('companies')
-        .doc(company.id)
-        .set(company.toFirestore());
+    final batch = _firestore.batch();
+    batch.set(
+      _firestore.collection('companies').doc(company.id),
+      company.toFirestore(),
+    );
+    batch.set(
+      _firestore.collection('companyContacts').doc(company.id),
+      company.toContactFirestore(),
+    );
+    await batch.commit();
   }
 
-  // Update existing company
+  // Update existing company — same two-document split as createCompany.
+  // The contact side is set(merge:true) rather than update(): a company that
+  // predates the contact split has no sidecar yet, and update() on a missing
+  // document throws.
   Future<void> updateCompany(CompanyModel company) async {
-    await _firestore
-        .collection('companies')
-        .doc(company.id)
-        .update(company.toFirestoreForUpdate());
+    final batch = _firestore.batch();
+    batch.update(
+      _firestore.collection('companies').doc(company.id),
+      company.toFirestoreForUpdate(),
+    );
+    batch.set(
+      _firestore.collection('companyContacts').doc(company.id),
+      company.toContactFirestore(),
+      SetOptions(merge: true),
+    );
+    await batch.commit();
+  }
+
+  /// Reads a company's gated contact block. Firestore rules release it only to
+  /// the owner, an admin, or a signed-in email-verified user, so a
+  /// permission-denied here means "not entitled" and surfaces as null — the
+  /// same fail-closed shape as CapacityService.getCapacityOwner.
+  Future<Map<String, dynamic>?> getCompanyContact(String companyId) async {
+    try {
+      final doc = await _firestore
+          .collection('companyContacts')
+          .doc(companyId)
+          .get();
+      return doc.exists ? doc.data() : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Toggle the retention-email opt-in (match alerts + weekly digest). A single
@@ -118,7 +153,12 @@ class CompanyService {
         .update({'logoUrl': logoUrl});
   }
 
-  // Get company by owner ID
+  // Get company by owner ID — the OWNER's own company, so the gated contact
+  // block is merged back on. Every owner-facing surface resolves its company
+  // through here (dashboard, settings, profile editor, post creation, the
+  // viewer-side checks on capacity detail), which is what keeps phone/email/
+  // address working unchanged for the one reader who is always entitled to
+  // them.
   Future<CompanyModel?> getCompanyByOwner(String ownerId) async {
     final query = await _firestore
         .collection('companies')
@@ -127,7 +167,8 @@ class CompanyService {
         .get();
 
     if (query.docs.isEmpty) return null;
-    return CompanyModel.fromFirestore(query.docs.first);
+    final company = CompanyModel.fromFirestore(query.docs.first);
+    return company.withContact(await getCompanyContact(company.id));
   }
 
   // Single company by ID — for inline rating badges on capacity/company cards
@@ -140,16 +181,33 @@ class CompanyService {
   }
 
   // Get all companies for directory — excludes ones whose name/description
-  // is flagged and awaiting admin review, and ones an admin has suspended.
+  // is flagged and awaiting admin review, ones an admin has suspended, and
+  // (H3 fix) ones that aren't yet directory-eligible: owner's email not
+  // verified, or the profile is still missing basic fields (description/
+  // phone/address/trades). The company doc itself stays readable directly by
+  // id (company_detail_screen etc.) — only the browsable directory listing is
+  // gated, same as the pre-existing contentFlagged/suspended filtering below,
+  // which this folds into CompanyModel.isDirectoryEligible.
   Stream<List<CompanyModel>> getCompanies() {
+    // Sorted client-side (like AdminService.getAllCompanies) rather than via
+    // a Firestore-level .orderBy('createdAt') — a query-level orderBy SILENTLY
+    // EXCLUDES any document missing that field from the results entirely
+    // (not just sorts it last), so a company doc without createdAt used to
+    // vanish from this public listing while staying fully visible in the
+    // admin company list, which never had the orderBy. Null-safe fallback to
+    // DateTime(0) matches the admin sort exactly.
     return _firestore
         .collection('companies')
-        .orderBy('createdAt', descending: true)
         .snapshots()
-        .map((snapshot) => snapshot.docs
-            .map((doc) => CompanyModel.fromFirestore(doc))
-            .where((c) => !c.contentFlagged && !c.suspended)
-            .toList());
+        .map((snapshot) {
+      final list = snapshot.docs
+          .map((doc) => CompanyModel.fromFirestore(doc))
+          .where((c) => c.isDirectoryEligible)
+          .toList();
+      list.sort((a, b) =>
+          (b.createdAt ?? DateTime(0)).compareTo(a.createdAt ?? DateTime(0)));
+      return list;
+    });
   }
 
   // Search companies by trade or city
@@ -252,7 +310,7 @@ class CompanyService {
   }
 
   /// How many companies list this one as their referrer (see
-  /// AuthService._referrerFromUrl / CompanyModel.referredBy) — shown to the
+  /// AuthService.referrerFromUrl / CompanyModel.referredBy) — shown to the
   /// inviter as "Empfehlungen: Nx" in Settings. A single billed count()
   /// aggregate, same pattern as CapacityService.countOwnerPosts.
   Future<int> countReferrals(String companyId) async {
@@ -399,5 +457,78 @@ class CompanyService {
         .get();
     if (!doc.exists) return null;
     return CompanyRatingModel.fromFirestore(doc);
+  }
+
+  /// ONE-OFF admin migration that moves contact data off the world-readable
+  /// company document.
+  ///
+  /// New writes already split correctly, but every company created before that
+  /// still has its email/phone/address/postalCode sitting inline on
+  /// `companies/{id}` — which is `read: if true`. Until this runs, the gating
+  /// added to `companyContacts` protects nothing for those companies: the data
+  /// is still one unauthenticated REST read away.
+  ///
+  /// For each such company this: (1) copies the four fields into the gated
+  /// `companyContacts/{id}` sidecar, (2) stamps `profileComplete` on the public
+  /// doc (computed from the inline values, before they are removed, so the
+  /// directory listing keeps working — see CompanyModel.storedProfileComplete),
+  /// and (3) deletes the four fields from the public doc.
+  ///
+  /// Idempotent: a document with none of the four keys is already migrated and
+  /// is skipped, so this is safe to re-run.
+  ///
+  /// Must be run while signed in as an admin — the companies-update and
+  /// companyContacts-write rules both permit admins, so no backend is needed.
+  Future<Map<String, int>> migrateContactsToGatedSidecar() async {
+    final snap = await _firestore.collection('companies').get();
+    int migrated = 0, skipped = 0, failed = 0;
+
+    for (final doc in snap.docs) {
+      final data = doc.data();
+      const contactKeys = ['email', 'phone', 'address', 'postalCode'];
+      if (!contactKeys.any(data.containsKey)) {
+        skipped++;
+        continue;
+      }
+      try {
+        final tradesData = data['trades'];
+        final trades = tradesData is List
+            ? List<String>.from(tradesData)
+            : <String>[];
+        final complete = CompanyModel.calculateCompleteness(
+              description: data['description'] ?? '',
+              website: data['website'] ?? '',
+              phone: data['phone'] ?? '',
+              address: data['address'] ?? '',
+              trades: trades,
+            ) >=
+            1.0;
+
+        final batch = _firestore.batch();
+        batch.set(
+          _firestore.collection('companyContacts').doc(doc.id),
+          {
+            'email': data['email'] ?? '',
+            'phone': data['phone'] ?? '',
+            'address': data['address'] ?? '',
+            'postalCode': data['postalCode'] ?? '',
+            'updatedAt': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true),
+        );
+        batch.update(doc.reference, {
+          'profileComplete': complete,
+          'email': FieldValue.delete(),
+          'phone': FieldValue.delete(),
+          'address': FieldValue.delete(),
+          'postalCode': FieldValue.delete(),
+        });
+        await batch.commit();
+        migrated++;
+      } catch (_) {
+        failed++;
+      }
+    }
+    return {'migrated': migrated, 'skipped': skipped, 'failed': failed};
   }
 }

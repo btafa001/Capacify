@@ -58,4 +58,22 @@ class ReportModel {
         'createdAt': Timestamp.fromDate(createdAt),
         'status': status,
       };
+
+  factory ReportModel.fromFirestore(DocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>? ?? {};
+    return ReportModel(
+      id: doc.id,
+      capacityId: data['capacityId'] ?? '',
+      capacityTitle: data['capacityTitle'] ?? '',
+      companyId: data['companyId'] ?? '',
+      companyName: data['companyName'] ?? '',
+      reporterId: data['reporterId'] ?? '',
+      reason: ReportReason.values.firstWhere(
+        (r) => r.name == data['reason'],
+        orElse: () => ReportReason.spam,
+      ),
+      createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      status: data['status'] ?? 'pending',
+    );
+  }
 }

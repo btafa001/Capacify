@@ -37,6 +37,17 @@ class AppLocalizations {
   // Post-creation flow: leads with team framing rather than a raw headcount.
   String get teamSizeLabel   => _t('Teamgröße', 'Team size');
   String get callTooltip     => _t('Anrufen', 'Call');
+  String get closeTooltip    => _t('Schließen', 'Close');
+  String get clearSearchTooltip => _t('Suche löschen', 'Clear search');
+  String get dismissTooltip  => _t('Ausblenden', 'Dismiss');
+  String get removeSavedSearchTooltip => _t('Gespeicherte Suche entfernen', 'Remove saved search');
+  String get showPasswordTooltip => _t('Passwort anzeigen', 'Show password');
+  String get hidePasswordTooltip => _t('Passwort verbergen', 'Hide password');
+  String get decreaseTeamSizeTooltip => _t('Anzahl verringern', 'Decrease count');
+  String get increaseTeamSizeTooltip => _t('Anzahl erhöhen', 'Increase count');
+  String get changeLogoTooltip => _t('Logo ändern', 'Change logo');
+  String get sendMessageTooltip => _t('Nachricht senden', 'Send message');
+  String rateStarsTooltip(int n) => _t('$n von 5 Sternen bewerten', 'Rate $n out of 5 stars');
   // Perishability + freshness (feed card).
   String daysLeftLabel(int n) => n <= 1
       ? _t('nur noch heute', 'today only')
@@ -109,6 +120,24 @@ class AppLocalizations {
   String get notificationsMatches      => _t('Neue Kapazitäten für Sie', 'New capacities for you');
   // Admin-only notification section (#9) — verification/flag/rating events.
   String get notificationsAdminEvents  => _t('Admin', 'Admin');
+  // Personal notification section — accepted requests, verification result, new
+  // ratings, and nudges (addressed to the recipient company, not to admins).
+  String get notificationsActivity => _t('Aktivität', 'Activity');
+  String notificationRequestAcceptedBy(String name) =>
+      _t('$name hat Ihre Anfrage angenommen', '$name accepted your request');
+  String get notificationRequestAccepted =>
+      _t('Ihre Anfrage wurde angenommen', 'Your request was accepted');
+  String get notificationVerificationApproved =>
+      _t('Ihr Unternehmen ist jetzt verifiziert', 'Your company is now verified');
+  String get notificationVerificationRejected =>
+      _t('Ihre Verifizierung wurde abgelehnt', 'Your verification was declined');
+  String notificationRatingApproved(int stars) => stars > 0
+      ? _t('Neue Bewertung erhalten: $stars/5', 'New rating received: $stars/5')
+      : _t('Sie haben eine neue Bewertung erhalten', 'You received a new rating');
+  String get notificationPendingNudge =>
+      _t('Eine Anfrage wartet auf Ihre Antwort', 'A request is waiting for your reply');
+  String get notificationCollabNudge =>
+      _t('Zusammenarbeit bestätigen?', 'Confirm your collaboration?');
   String notificationVerificationSubmitted(String name) =>
       _t('$name hat eine Verifizierung beantragt', '$name submitted a verification request');
   String notificationContentFlaggedCompany(String name) =>
@@ -118,6 +147,18 @@ class AppLocalizations {
   String notificationRatingSubmitted(String name) =>
       _t('Neue Bewertung für $name wartet auf Freigabe', 'A new rating for $name is awaiting approval');
   String get reportUser                => _t('Nutzer melden', 'Report user');
+  String get blockCompanyAction        => _t('Unternehmen blockieren', 'Block company');
+  String get unblockCompanyAction      => _t('Blockierung aufheben', 'Unblock company');
+  String get blockCompanyConfirmTitle  => _t('Unternehmen blockieren?', 'Block this company?');
+  String blockCompanyConfirmBody(String name) => _t(
+      '$name kann Sie danach nicht mehr über neue Beiträge kontaktieren und Sie können keine neuen Anfragen an dieses Unternehmen senden.',
+      '$name will no longer be able to contact you about new posts, and you won\'t be able to send them new requests either.');
+  String get companyBlockedSnackbar    => _t('Unternehmen blockiert', 'Company blocked');
+  String get companyUnblockedSnackbar  => _t('Blockierung aufgehoben', 'Company unblocked');
+  String get blockedCompanyBadge       => _t('BLOCKIERT', 'BLOCKED');
+  String get chatBlockedComposerNotice => _t(
+      'Sie haben dieses Unternehmen blockiert und können hier keine Nachrichten mehr senden.',
+      'You\'ve blocked this company and can no longer send messages here.');
   // ── Pricing / plans (H6) ──────────────────────────────────────────────────
   String get pricingTitle          => _t('Vermittlungen & Tarife', 'Connections & plans');
   String get pricingEarlyAccessBadge => _t('Early Access', 'Early Access');
@@ -398,9 +439,9 @@ class AppLocalizations {
   String get websiteLabel     => 'Website';
   String get sectionVerify    => _t('VERIFIZIERUNG', 'VERIFICATION');
   String get verifiedBadgeLabel => _t('Ihr Unternehmen ist verifiziert', 'Your company is verified');
-  String get vatLabel         => _t('Umsatzsteuer-ID (USt-IdNr.)', 'VAT number');
+  String get vatLabel         => _t('USt-IdNr. / VAT-Nummer (EU)', 'VAT number (EU)');
   String get vatHint          => 'DE123456789';
-  String get vatError         => _t('Format: DE + 9 Ziffern (z.B. DE123456789)', 'Format: DE + 9 digits (e.g. DE123456789)');
+  String get vatError         => _t('Ungültiges Format für dieses Land (z.B. DE123456789, ATU12345678)', 'Invalid format for this country (e.g. DE123456789, ATU12345678)');
   String get verifyHowTitle   => _t('Wie die Verifizierung funktioniert', 'How verification works');
   String get verifySteps      => _t(
     '1. Geben Sie Ihre USt-IdNr. ein\n'
@@ -423,6 +464,28 @@ class AppLocalizations {
   String get weakPwError      => _t(
     'Bitte wählen Sie ein stärkeres Passwort.',
     'Please choose a stronger password.',
+  );
+
+  // ── Onboarding interstitial (Google/Apple sign-up) ────────────────────────
+  // The email path collects company name + AGB consent on the registration
+  // form itself. The OAuth path can't — the provider popup returns an account
+  // and nothing else — so the same two things are collected here instead,
+  // before the company doc exists and before the dashboard is reachable.
+  String get onboardingTitle    => _t('Fast geschafft', 'Almost there');
+  String get onboardingSubtitle => _t(
+    'Nur noch Ihr Unternehmensname – dann können Sie sofort Kapazitäten posten und Anfragen erhalten.',
+    'Just your company name — then you can post capacity and receive requests right away.',
+  );
+  String get onboardingContinue => _t('WEITER', 'CONTINUE');
+  String get onboardingSignedInAs => _t('Angemeldet als', 'Signed in as');
+  String get onboardingWrongAccount => _t('Anderes Konto verwenden', 'Use a different account');
+  String get onboardingCreateError => _t(
+    'Ihr Unternehmensprofil konnte nicht angelegt werden. Bitte versuchen Sie es erneut.',
+    'We could not create your company profile. Please try again.',
+  );
+  String get onboardingLater    => _t(
+    'Weitere Angaben (Gewerk, Adresse, Logo) können Sie jederzeit im Profil ergänzen.',
+    'You can add the rest (trade, address, logo) in your profile at any time.',
   );
   String get registerButton   => _t('KOSTENLOS REGISTRIEREN', 'REGISTER FOR FREE');
   String get registerDisclaimer => _t(
@@ -733,6 +796,13 @@ class AppLocalizations {
   String favoritesCount(int n)    => _t('$n Favoriten', '$n favorites');
   String get contactLabel         => _t('Kontakt', 'Contact');
   String get noContactInfoText    => _t('Keine Kontaktdaten hinterlegt', 'No contact details available');
+  // Shown when the viewer isn't entitled to the gated contact block (signed
+  // out, or signed in without a verified email). Deliberately distinct from
+  // noContactInfoText, which means "this company filled in nothing" — telling
+  // a signed-out visitor that would be plainly false.
+  String get contactHiddenSignedOut => _t(
+      'Kontaktdaten sind nur für angemeldete Unternehmen mit bestätigter E-Mail sichtbar.',
+      'Contact details are visible only to signed-in companies with a verified email.');
   String get jobAwardedArchivedNotice => _t(
     'Dieser Auftrag wurde vergeben. Die Daten sind archiviert.',
     'This job has been awarded. The data is archived.',
@@ -994,7 +1064,6 @@ class AppLocalizations {
   String get signOutSubtitle      => _t('Vom Konto abmelden', 'Sign out of account');
   String get currentPasswordLabel => _t('Aktuelles Passwort', 'Current password');
   String get newPasswordLabel     => _t('Neues Passwort', 'New password');
-  String get min6CharsError       => _t('Mindestens 6 Zeichen', 'At least 6 characters');
   String get confirmNewPasswordLabel => _t('Neues Passwort bestätigen', 'Confirm new password');
   String get passwordsDontMatchError => _t('Passwörter stimmen nicht überein', 'Passwords do not match');
   String get demoDataSeededSuccess => _t('20 Beispiel-Postings + 6 Unternehmen eingespielt', '20 sample postings + 6 companies seeded');
@@ -1181,6 +1250,20 @@ class AppLocalizations {
   );
   String get contentUnderReviewBadge => _t('IN PRÜFUNG', 'UNDER REVIEW');
   String get searchEllipsisHint   => _t('Suchen…', 'Search…');
+
+  // ── Admin panel — user-filed reports (distinct from auto-flagged content) ──
+  String get reportsTab            => _t('MELDUNGEN', 'REPORTS');
+  String get noReportsTitle        => _t('Keine Meldungen', 'No reports');
+  String get allReportsHandledText => _t('Alle Meldungen sind bearbeitet.', 'All reports have been handled.');
+  String get reportedPostingTypeLabel => _t('MELDUNG', 'REPORT');
+  String get reportedCompanyLabel  => _t('Gemeldetes Unternehmen', 'Reported company');
+  String get reportedPostLabel     => _t('Gemeldeter Beitrag', 'Reported post');
+  String get markResolvedLabel     => _t('ERLEDIGT', 'RESOLVED');
+  String get dismissReportLabel    => _t('VERWERFEN', 'DISMISS');
+  String get reportResolvedSnackbar => _t('Meldung als erledigt markiert ✓', 'Report marked resolved ✓');
+  String get reportDismissedSnackbar => _t('Meldung verworfen', 'Report dismissed');
+  String get reportStatusResolved  => _t('ERLEDIGT', 'RESOLVED');
+  String get reportStatusDismissed => _t('VERWORFEN', 'DISMISSED');
   String get noResultsText        => _t('Keine Ergebnisse', 'No results');
   String get revokeVerificationTitle => _t('Verifizierung entziehen?', 'Revoke verification?');
   String revokeVerificationBody(String name) => _t(
@@ -1419,7 +1502,10 @@ class AppLocalizations {
   String get trustBlockTitle      => _t('Vertrauen', 'Trust');
   String get trustVerifiedCompany => _t('Verifiziertes Unternehmen', 'Verified company');
   String get trustUnverifiedCompany => _t('Noch nicht verifiziert', 'Not yet verified');
-  String trustRatingSummary(String avg, int count) =>
+  // `count` is pre-formatted (see CapacityModel.posterRatingCountDisplay) so a
+  // banded review count can read as "10+ Bewertungen" rather than claiming an
+  // exact figure the public post deliberately no longer carries.
+  String trustRatingSummary(String avg, String count) =>
       _t('$avg · $count Bewertungen', '$avg · $count reviews');
   String get trustNoRatingsYet    => _t('Noch keine Bewertungen', 'No reviews yet');
   // Anonymous posts only (name genuinely hidden). Was worded around an
@@ -1487,6 +1573,17 @@ class AppLocalizations {
   String migrateLegacyResult(int migrated, int skipped, int failed) => _t(
       'Migriert: $migrated · übersprungen: $skipped · Fehler: $failed',
       'Migrated: $migrated · skipped: $skipped · failed: $failed');
+
+  // ── Admin one-off privacy backfill ──────────────────────────────────────────
+  String get privacyBackfillTooltip => _t('Datenschutz-Backfill', 'Privacy backfill');
+  String get privacyBackfillTitle   => _t('Datenschutz-Backfill', 'Privacy backfill');
+  String get privacyBackfillConfirm => _t(
+      'Verschiebt E-Mail, Telefon und Adresse aller bestehenden Unternehmen vom öffentlich lesbaren Profil in den geschützten Kontaktbereich und vergröbert die exakten Bewertungs- und Antwortzeit-Werte auf allen bestehenden Anzeigen. Einmalig und beliebig oft wiederholbar.',
+      'Moves every existing company\'s email, phone and address off the publicly readable profile into the gated contact record, and coarsens the exact rating and response-time figures on all existing posts. One-off and safe to re-run.');
+  String get privacyBackfillRun     => _t('Backfill starten', 'Run backfill');
+  String privacyBackfillResult(int companies, int posts, int failed) => _t(
+      'Unternehmen: $companies · Anzeigen: $posts · Fehler: $failed',
+      'Companies: $companies · posts: $posts · failed: $failed');
 
   // ── Admin extensions (pre-screening + repeat signal) ────────────────────────
   String get approveForPosterButton => _t('Für Anbieter freigeben', 'Release to provider');

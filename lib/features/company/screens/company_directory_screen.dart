@@ -10,6 +10,7 @@ import '../../../shared/widgets/trade_pill_dropdown.dart';
 import '../../../core/localization/app_localizations.dart';
 import 'company_detail_screen.dart';
 import '../../../core/services/analytics_service.dart';
+import '../../../core/services/block_provider.dart';
 
 class CompanyDirectoryScreen extends ConsumerStatefulWidget {
   final bool embedded;
@@ -39,8 +40,10 @@ class _CompanyDirectoryScreenState
     super.dispose();
   }
 
-  List<CompanyModel> _filterCompanies(List<CompanyModel> companies) {
+  List<CompanyModel> _filterCompanies(
+      List<CompanyModel> companies, Set<String> blockedIds) {
     return companies.where((c) {
+      if (blockedIds.contains(c.id)) return false;
       if (_onlyVerified && !c.isVerified) return false;
       if (_selectedTrades.isNotEmpty &&
           !c.trades.any((t) => _selectedTrades.contains(t))) return false;
@@ -59,6 +62,7 @@ class _CompanyDirectoryScreenState
     final c = AppColors.of(context);
     final l = AppLocalizations.of(context);
     final companiesAsync = ref.watch(companiesProvider);
+    final blockedIds = ref.watch(myBlockedCompanyIdsProvider).valueOrNull ?? const <String>{};
 
     return Scaffold(
       backgroundColor: c.background,
@@ -70,6 +74,7 @@ class _CompanyDirectoryScreenState
             ? null
             : IconButton(
                 icon: Icon(Icons.arrow_back, color: c.textPrimary),
+                tooltip: MaterialLocalizations.of(context).backButtonTooltip,
                 onPressed: () => Navigator.pop(context),
               ),
         title: CapacifyWordmark(symbolSize: 28, fontSize: 18, textColor: c.textPrimary),
@@ -138,6 +143,7 @@ class _CompanyDirectoryScreenState
                     suffixIcon: _searchText.isNotEmpty
                         ? IconButton(
                             icon: Icon(Icons.close, color: c.textSecondary, size: 18),
+                            tooltip: l.clearSearchTooltip,
                             onPressed: () {
                               _searchController.clear();
                               setState(() => _searchText = '');
@@ -174,7 +180,7 @@ class _CompanyDirectoryScreenState
           Expanded(
             child: companiesAsync.when(
               data: (companies) {
-                final filtered = _filterCompanies(companies);
+                final filtered = _filterCompanies(companies, blockedIds);
 
                 if (filtered.isEmpty) {
                   return Center(
@@ -202,6 +208,11 @@ class _CompanyDirectoryScreenState
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 1200),
                     child: GridView.builder(
+                      // Clamping physics — see the matching comment in
+                      // live_capacity_feed_screen.dart: bouncing overscroll
+                      // desyncs each card's HTML <img> CompanyLogoAvatar from
+                      // the canvas-rendered card during the rubber-band drag.
+                      physics: const ClampingScrollPhysics(),
                       padding: const EdgeInsets.fromLTRB(24, 16, 24, 80),
                       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
                         maxCrossAxisExtent: 300,
@@ -320,21 +331,36 @@ class _CompanyCardState extends State<_CompanyCard> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         // Avatar + verification badge
-                        Row(
-                          children: [
-                            // CompanyLogoAvatar (not a raw Image.network) — see its
-                            // doc comment for why: a plain Image.network here
-                            // reproduces the huge-grey-box Flutter-Web bug that
-                            // company_detail_screen.dart's hero avatar and the feed
-                            // cards already had to work around.
-                            CompanyLogoAvatar(
-                              logoUrl: company.logoUrl,
-                              companyName: company.name,
-                              radius: 26,
-                            ),
-                            const Spacer(),
-                            _VerificationBadge(status: company.verificationStatus),
-                          ],
+                        LayoutBuilder(
+                          builder: (context, box) {
+                            // Phones still get two grid columns, which leaves only
+                            // ~145px of content width — a 52px logo plus the badge
+                            // fills that edge to edge. Shrink the logo and keep a
+                            // hard gap so the two never crowd each other.
+                            final compact = box.maxWidth < 200;
+                            return Row(
+                              children: [
+                                // CompanyLogoAvatar (not a raw Image.network) — see its
+                                // doc comment for why: a plain Image.network here
+                                // reproduces the huge-grey-box Flutter-Web bug that
+                                // company_detail_screen.dart's hero avatar and the feed
+                                // cards already had to work around.
+                                CompanyLogoAvatar(
+                                  logoUrl: company.logoUrl,
+                                  companyName: company.name,
+                                  radius: compact ? 20 : 26,
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Align(
+                                    alignment: Alignment.centerRight,
+                                    child: _VerificationBadge(
+                                        status: company.verificationStatus),
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
                         ),
                         const SizedBox(height: 12),
 
@@ -455,7 +481,16 @@ class _VerificationBadge extends StatelessWidget {
         children: [
           Icon(icon, size: 11, color: color),
           const SizedBox(width: 3),
-          Text(label, style: TextStyle(fontSize: 9, fontWeight: FontWeight.w900, color: color, letterSpacing: 0.3)),
+          // Flexible so the longest label ('PRÜFUNG LÄUFT') wraps inside the
+          // narrow phone cards instead of overflowing past the logo.
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 9, fontWeight: FontWeight.w900, color: color, letterSpacing: 0.3),
+            ),
+          ),
         ],
       ),
     );

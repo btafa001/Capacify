@@ -129,7 +129,14 @@ class NotificationBell extends ConsumerWidget {
     // rating) — naturally 0 for non-admins, since only admin uids ever
     // receive those notification types.
     final unreadAdminNotifs = ref.watch(unreadAdminNotificationsProvider(uid));
-    final count = newVermittlungen + unreadMessages + newMatches + unreadAdminNotifs.length;
+    // Personal events (request accepted / verification result / rating approved /
+    // nudges) — addressed to this company regardless of admin status.
+    final unreadPersonalNotifs = ref.watch(unreadPersonalNotificationsProvider(uid));
+    final count = newVermittlungen +
+        unreadMessages +
+        newMatches +
+        unreadAdminNotifs.length +
+        unreadPersonalNotifs.length;
 
     return Stack(
       clipBehavior: Clip.none,
@@ -140,9 +147,10 @@ class NotificationBell extends ConsumerWidget {
           onPressed: () {
             _openCenter(context, ref);
             ref.read(notifSeenProvider.notifier).markSeenNow();
-            ref
-                .read(notificationServiceProvider)
-                .markAllRead(ref.read(unreadAdminNotificationsProvider(uid)));
+            ref.read(notificationServiceProvider).markAllRead([
+              ...ref.read(unreadAdminNotificationsProvider(uid)),
+              ...ref.read(unreadPersonalNotificationsProvider(uid)),
+            ]);
           },
         ),
         if (count > 0)
@@ -197,14 +205,15 @@ class _NotificationCenter extends ConsumerWidget {
     final chats = ref.watch(myChatsProvider(uid)).valueOrNull ?? [];
     final unreadChats = chats.where((ch) => ch.unreadFor(uid) > 0).toList();
     final matches = ref.watch(matchAlertsProvider(uid));
-    // Gated on CURRENT isAdmin, not just on whose uid old fan-out docs happen
-    // to be addressed to — see unreadAdminNotificationsProvider for why.
+    final allNotifs = ref.watch(myNotificationsProvider(uid)).valueOrNull ?? [];
+    // Admin events gated on CURRENT isAdmin, not just on whose uid old fan-out
+    // docs happen to be addressed to — see unreadAdminNotificationsProvider.
     final isAdmin = ref.watch(isAdminProvider).valueOrNull ?? false;
-    final adminNotifs = isAdmin
-        ? (ref.watch(myNotificationsProvider(uid)).valueOrNull ?? [])
-            .where((n) => n.isAdminEvent)
-            .toList()
-        : <NotificationModel>[];
+    final adminNotifs =
+        isAdmin ? allNotifs.where((n) => n.isAdminEvent).toList() : <NotificationModel>[];
+    // Personal events render for their recipient regardless of admin status.
+    final personalNotifs = allNotifs.where((n) => n.isPersonalEvent).toList()
+      ..sort((a, b) => (b.createdAt ?? DateTime(0)).compareTo(a.createdAt ?? DateTime(0)));
 
     final recentVermittlungen = [...vermittlungen]
       ..sort((a, b) => (b.createdAt ?? DateTime(0)).compareTo(a.createdAt ?? DateTime(0)));
@@ -212,6 +221,7 @@ class _NotificationCenter extends ConsumerWidget {
     final isEmpty = recentVermittlungen.isEmpty &&
         unreadChats.isEmpty &&
         matches.isEmpty &&
+        personalNotifs.isEmpty &&
         adminNotifs.isEmpty;
 
     return ConstrainedBox(
@@ -241,6 +251,13 @@ class _NotificationCenter extends ConsumerWidget {
                   if (matches.isNotEmpty)
                     _SectionLabel(label: l.notificationsMatches),
                   ...matches.take(8).map((cap) => _MatchTile(capacity: cap)),
+                  // Personal activity — accepted requests, verification result,
+                  // new ratings, nudges. High-signal, so kept near the top.
+                  if (personalNotifs.isNotEmpty)
+                    _SectionLabel(label: l.notificationsActivity),
+                  ...personalNotifs
+                      .take(8)
+                      .map((n) => _PersonalNotifTile(notification: n, uid: uid)),
                   if (recentVermittlungen.isNotEmpty)
                     _SectionLabel(label: l.notificationsVermittlungen),
                   ...recentVermittlungen.take(8).map((r) => _VermittlungTile(request: r, uid: uid)),
@@ -468,6 +485,93 @@ class _AdminNotifTile extends ConsumerWidget {
           showCompanyDetailDialog(context, company);
         } else {
           Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminScreen()));
+        }
+      },
+    );
+  }
+}
+
+/// A personal event addressed to this company — request accepted, verification
+/// result, new rating, or a nudge. Server-authored (Cloud Functions) and only
+/// ever addressed to its recipient, so this never renders for anyone else. A
+/// `request_accepted` tile taps straight into the now-open chat; the rest are
+/// informational and just close the sheet.
+class _PersonalNotifTile extends ConsumerWidget {
+  final NotificationModel notification;
+  final String uid;
+  const _PersonalNotifTile({required this.notification, required this.uid});
+
+  (IconData, Color, String) _display(AppLocalizations l) {
+    final n = notification;
+    switch (n.type) {
+      case 'request_accepted':
+        return (
+          Icons.lock_open_outlined,
+          AppColors.live,
+          n.companyName.isNotEmpty
+              ? l.notificationRequestAcceptedBy(n.companyName)
+              : l.notificationRequestAccepted,
+        );
+      case 'verification_result':
+        return n.outcome == 'verified'
+            ? (Icons.verified_outlined, AppColors.live, l.notificationVerificationApproved)
+            : (Icons.error_outline, AppColors.error, l.notificationVerificationRejected);
+      case 'rating_approved':
+        return (Icons.star_outline, AppColors.warning, l.notificationRatingApproved(n.rating));
+      case 'request_pending_nudge':
+        return (Icons.schedule_outlined, AppColors.warning, l.notificationPendingNudge);
+      case 'collab_nudge':
+        return (Icons.handshake_outlined, AppColors.primary, l.notificationCollabNudge);
+      default:
+        return (Icons.notifications_none_rounded, AppColors.primary, n.companyName);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = AppColors.of(context);
+    final l = AppLocalizations.of(context);
+    final n = notification;
+    final (icon, color, title) = _display(l);
+    final date = n.createdAt;
+    final dateStr = date != null ? '${date.day}.${date.month}.${date.year}' : '';
+    final canOpenChat = n.type == 'request_accepted' && n.companyId.isNotEmpty;
+
+    return ListTile(
+      leading: Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(color: color.withOpacity(0.12), shape: BoxShape.circle),
+        child: Icon(icon, size: 18, color: color),
+      ),
+      title: Text(title,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(color: c.textPrimary, fontSize: 14, fontWeight: FontWeight.w700)),
+      subtitle: dateStr.isEmpty
+          ? null
+          : Text(l.sinceDateLabel(dateStr),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: c.textTertiary, fontSize: 12)),
+      trailing: canOpenChat
+          ? Icon(Icons.chevron_right, size: 18, color: c.textTertiary)
+          : null,
+      onTap: () {
+        Navigator.pop(context);
+        if (canOpenChat) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => ChatScreen(
+                chatId: n.requestId,
+                myCompanyId: uid,
+                otherCompanyId: n.companyId,
+                otherCompanyName: n.companyName,
+                postId: n.postId,
+              ),
+            ),
+          );
         }
       },
     );

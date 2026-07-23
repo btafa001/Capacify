@@ -35,3 +35,6 @@ app.*.map.json
 firebase-debug.log
 firestore-debug.log
 ui-debug.log
+
+# Node (Cloud Functions + the firestore.rules emulator test suite)
+node_modules/

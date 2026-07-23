@@ -6,20 +6,47 @@ import '../models/capacity_model.dart';
 class AdminService {
   final _db = FirebaseFirestore.instance;
 
+  /// Every company's gated contact block, keyed by company id.
+  ///
+  /// Contact data no longer lives on the public company doc (see
+  /// CompanyModel's class doc), so the admin console — which legitimately
+  /// shows and USES it, e.g. sending the set-password invite to
+  /// company.email — has to join it back on. Listing this collection is
+  /// admin-only in firestore.rules, which is exactly what stops a
+  /// merely-verified user from bulk-reading it. Fails closed: a denied or
+  /// failed read yields an empty map, so the console degrades to blank
+  /// contact rather than breaking outright.
+  Future<Map<String, Map<String, dynamic>>> _contactsById() async {
+    try {
+      final snap = await _db.collection('companyContacts').get();
+      return {for (final d in snap.docs) d.id: d.data()};
+    } catch (_) {
+      return const {};
+    }
+  }
+
   Stream<List<CompanyModel>> getPendingCompanies() {
     return _db
         .collection('companies')
         .where('verificationStatus', isEqualTo: 'pending')
         .snapshots()
-        .map((s) => s.docs.map(CompanyModel.fromFirestore).toList());
+        .asyncMap((s) async {
+      final contacts = await _contactsById();
+      return s.docs
+          .map((d) => CompanyModel.fromFirestore(d).withContact(contacts[d.id]))
+          .toList();
+    });
   }
 
   Stream<List<CompanyModel>> getAllCompanies() {
     return _db
         .collection('companies')
         .snapshots()
-        .map((s) {
-      final list = s.docs.map(CompanyModel.fromFirestore).toList();
+        .asyncMap((s) async {
+      final contacts = await _contactsById();
+      final list = s.docs
+          .map((d) => CompanyModel.fromFirestore(d).withContact(contacts[d.id]))
+          .toList();
       list.sort((a, b) => (b.createdAt ?? DateTime(0))
           .compareTo(a.createdAt ?? DateTime(0)));
       return list;
@@ -211,8 +238,11 @@ class AdminService {
         .collection('companies')
         .where('contentFlagged', isEqualTo: true)
         .snapshots()
-        .map((s) {
-      final list = s.docs.map(CompanyModel.fromFirestore).toList();
+        .asyncMap((s) async {
+      final contacts = await _contactsById();
+      final list = s.docs
+          .map((d) => CompanyModel.fromFirestore(d).withContact(contacts[d.id]))
+          .toList();
       list.sort((a, b) => (b.createdAt ?? DateTime(0))
           .compareTo(a.createdAt ?? DateTime(0)));
       return list;

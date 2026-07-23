@@ -12,6 +12,7 @@ import '../../../core/services/contact_request_provider.dart';
 import '../../../core/services/analytics_service.dart';
 import '../../../core/services/report_provider.dart';
 import '../../../core/models/report_model.dart';
+import '../../../core/services/block_provider.dart';
 import '../../../core/utils/content_moderation.dart';
 import '../../../shared/widgets/milestone.dart';
 
@@ -211,6 +212,35 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
+  // Blocking here just calls BlockService directly — no confirm dialog,
+  // unlike company_detail_screen.dart's toggle, since you're already mid-
+  // conversation and explicitly chose this from the menu. The composer below
+  // hides itself once isBlockedByMeProvider flips true.
+  Future<void> _toggleBlock(bool currentlyBlocked) async {
+    final l = AppLocalizations.of(context);
+    try {
+      final service = ref.read(blockServiceProvider);
+      if (currentlyBlocked) {
+        await service.unblockCompany(
+            blockerCompanyId: widget.myCompanyId, blockedCompanyId: widget.otherCompanyId);
+      } else {
+        await service.blockCompany(
+            blockerCompanyId: widget.myCompanyId, blockedCompanyId: widget.otherCompanyId);
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(currentlyBlocked ? l.companyUnblockedSnackbar : l.companyBlockedSnackbar),
+          backgroundColor: currentlyBlocked ? AppColors.live : AppColors.error,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(l.errorWithMessage(e)), backgroundColor: AppColors.error));
+      }
+    }
+  }
+
   // Only ever reachable once the underlying post is closed/cancelled (see
   // the menu item's own gating in build()) — deleteChat re-checks that
   // server-side regardless. Chats can't be deleted directly by the client
@@ -282,6 +312,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final post = ref.watch(capacityByIdProvider(widget.postId)).valueOrNull;
     final canDelete = post != null && (post.isClosed || post.isCancelled);
     final company = ref.watch(companyByIdProvider(widget.otherCompanyId)).valueOrNull;
+    final iBlockedThem =
+        ref.watch(isBlockedByMeProvider(widget.otherCompanyId)).valueOrNull ?? false;
     final title = (company?.name.isNotEmpty ?? false)
         ? company!.name
         : (widget.otherCompanyName.isNotEmpty
@@ -317,6 +349,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         elevation: 0,
         leading: IconButton(
           icon: Icon(Icons.arrow_back, color: c.textPrimary),
+          tooltip: MaterialLocalizations.of(context).backButtonTooltip,
           onPressed: () => Navigator.pop(context),
         ),
         title: Row(
@@ -362,6 +395,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             icon: Icon(Icons.more_vert, color: c.textSecondary),
             onSelected: (v) {
               if (v == 'report') _reportUser();
+              if (v == 'block') _toggleBlock(iBlockedThem);
               if (v == 'delete') _deleteChat();
             },
             itemBuilder: (ctx) => [
@@ -371,6 +405,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   const Icon(Icons.flag_outlined, size: 18, color: AppColors.error),
                   const SizedBox(width: 10),
                   Text(l.reportUser, style: TextStyle(color: c.textPrimary)),
+                ]),
+              ),
+              PopupMenuItem(
+                value: 'block',
+                child: Row(children: [
+                  Icon(iBlockedThem ? Icons.block : Icons.block_outlined,
+                      size: 18, color: AppColors.error),
+                  const SizedBox(width: 10),
+                  Text(iBlockedThem ? l.unblockCompanyAction : l.blockCompanyAction,
+                      style: TextStyle(color: c.textPrimary)),
                 ]),
               ),
               // Only offered once the match is closed/cancelled.
@@ -465,7 +509,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             padding: const EdgeInsets.only(left: 6, top: 6, bottom: 2),
                             child: Align(
                               alignment: Alignment.centerLeft,
-                              child: Text(otherContactName!,
+                              child: Text(otherContactName,
                                   style: TextStyle(
                                       fontSize: 10.5,
                                       color: c.textTertiary,
@@ -480,7 +524,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               },
             ),
           ),
-          // Composer
+          // Composer — replaced with a notice once I've blocked the other
+          // party. Doesn't touch the messages/{id} create rule (still open to
+          // both participants server-side); this is a client-side courtesy so
+          // I don't accidentally reply to someone I just blocked. Their own
+          // ability to send TO me is what firestore.rules' contact_requests
+          // block check actually governs, and only for NEW connections.
+          if (iBlockedThem)
+            Container(
+              decoration: BoxDecoration(
+                color: c.surface,
+                border: Border(top: BorderSide(color: c.border)),
+              ),
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+              child: SafeArea(
+                top: false,
+                child: Row(
+                  children: [
+                    Icon(Icons.block, size: 18, color: c.textTertiary),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(l.chatBlockedComposerNotice,
+                          style: TextStyle(color: c.textTertiary, fontSize: 13)),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
           Container(
             decoration: BoxDecoration(
               color: c.surface,
@@ -525,17 +596,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   Material(
                     color: AppColors.primary,
                     shape: const CircleBorder(),
-                    child: InkWell(
-                      customBorder: const CircleBorder(),
-                      onTap: _sending ? null : _send,
-                      child: Padding(
-                        padding: const EdgeInsets.all(11),
-                        child: _sending
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                            : const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                    child: Tooltip(
+                      message: l.sendMessageTooltip,
+                      child: InkWell(
+                        customBorder: const CircleBorder(),
+                        onTap: _sending ? null : _send,
+                        child: Padding(
+                          padding: const EdgeInsets.all(11),
+                          child: _sending
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              : const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                        ),
                       ),
                     ),
                   ),

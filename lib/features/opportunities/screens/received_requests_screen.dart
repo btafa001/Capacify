@@ -9,6 +9,7 @@ import '../../../core/services/auth_provider.dart';
 import '../../../core/services/capacity_provider.dart';
 import '../../../core/services/contact_request_provider.dart';
 import '../../../core/services/analytics_service.dart';
+import '../../../shared/widgets/app_states.dart';
 import '../../../shared/widgets/milestone.dart';
 import '../../messaging/screens/chat_screen.dart';
 
@@ -41,9 +42,18 @@ class ReceivedRequestsScreen extends ConsumerWidget {
           : ref.watch(receivedRequestsProvider(uid)).when(
                 loading: () =>
                     const Center(child: CircularProgressIndicator(color: AppColors.primary)),
-                error: (e, _) => Center(
-                    child: Text(l.errorWithMessage(e),
-                        style: const TextStyle(color: AppColors.error))),
+                // Retryable, not a dead end: a denied Firestore listener
+                // terminates and Riverpod caches the error, so without this the
+                // screen stayed broken until a full page reload. Invalidating
+                // myCapacities too — it feeds the postIds this query is built
+                // from, so retrying only the leaf would reuse a stale chain.
+                error: (e, _) => AppErrorState(
+                  error: e,
+                  onRetry: () {
+                    ref.invalidate(myCapacitiesProvider(uid));
+                    ref.invalidate(receivedRequestsProvider(uid));
+                  },
+                ),
                 data: (requests) {
                   if (requests.isEmpty) {
                     return Center(

@@ -10,6 +10,7 @@ import '../../../core/localization/app_localizations.dart';
 import '../../../shared/widgets/star_rating.dart';
 import '../../../shared/widgets/company_logo_avatar.dart';
 import '../../../core/services/analytics_service.dart';
+import '../../../core/services/block_provider.dart';
 
 /// Opens a company's profile as a compact popup instead of pushing a
 /// full-screen route — mirrors showCapacityDetailDialog so both post and
@@ -90,6 +91,7 @@ class CompanyDetailScreen extends ConsumerWidget {
             Icons.arrow_back,
             color: c.textPrimary,
           ),
+          tooltip: MaterialLocalizations.of(context).backButtonTooltip,
           onPressed: () => Navigator.pop(context),
         ),
         title: Text(
@@ -99,8 +101,17 @@ class CompanyDetailScreen extends ConsumerWidget {
             fontWeight: FontWeight.bold,
           ),
         ),
+        actions: [
+          if (currentUserId != null && !isOwnCompany)
+            _BlockMenuButton(myCompanyId: currentUserId, otherCompany: company),
+        ],
       ),
       body: SingleChildScrollView(
+        // Clamping physics — see the matching comment in
+        // live_capacity_feed_screen.dart: bouncing overscroll desyncs the
+        // HTML <img> CompanyLogoAvatar in the hero card from the canvas-
+        // rendered card behind it during the rubber-band animation.
+        physics: const ClampingScrollPhysics(),
         padding: const EdgeInsets.all(32),
         child: Center(
           child: ConstrainedBox(
@@ -442,34 +453,62 @@ class CompanyDetailScreen extends ConsumerWidget {
                 const SizedBox(height: 24),
               ],
 
-              // Contact
-              _DetailSection(
-                title: l.contactLabel,
-                child: Column(
-                  children: [
-                    if (company.email.isNotEmpty)
-                      _ContactRow(
-                        icon: Icons.email_outlined,
-                        value: company.email,
-                      ),
-                    if (company.phone.isNotEmpty)
-                      _ContactRow(
-                        icon: Icons.phone_outlined,
-                        value: company.phone,
-                      ),
-                    if (company.website.isNotEmpty)
-                      _ContactRow(
-                        icon: Icons.language_outlined,
-                        value: company.website,
-                      ),
-                    if (company.address.isNotEmpty)
-                      _ContactRow(
-                        icon: Icons.location_on_outlined,
-                        value:
-                            '${company.address}, ${company.postalCode} ${company.city}',
-                      ),
-                  ],
-                ),
+              // Contact. email/phone/address come from the GATED sidecar, not
+              // the public company doc — Firestore releases that block only to
+              // the owner, an admin, or a signed-in email-verified user, so a
+              // signed-out visitor scrolling the public directory gets the
+              // website (public by nature) and nothing else.
+              Consumer(
+                builder: (context, ref, _) {
+                  final contact =
+                      ref.watch(companyContactProvider(company.id)).value;
+                  final email = contact?['email'] as String? ?? '';
+                  final phone = contact?['phone'] as String? ?? '';
+                  final address = contact?['address'] as String? ?? '';
+                  final postalCode = contact?['postalCode'] as String? ?? '';
+                  return _DetailSection(
+                    title: l.contactLabel,
+                    child: Column(
+                      children: [
+                        if (email.isNotEmpty)
+                          _ContactRow(
+                            icon: Icons.email_outlined,
+                            value: email,
+                          ),
+                        if (phone.isNotEmpty)
+                          _ContactRow(
+                            icon: Icons.phone_outlined,
+                            value: phone,
+                          ),
+                        if (liveCompany.website.isNotEmpty)
+                          _ContactRow(
+                            icon: Icons.language_outlined,
+                            value: liveCompany.website,
+                          ),
+                        if (address.isNotEmpty)
+                          _ContactRow(
+                            icon: Icons.location_on_outlined,
+                            value:
+                                '$address, $postalCode ${liveCompany.city}',
+                          ),
+                        // Nothing released and no public website either —
+                        // say so rather than rendering an empty card.
+                        if (email.isEmpty &&
+                            phone.isEmpty &&
+                            address.isEmpty &&
+                            liveCompany.website.isEmpty)
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              l.contactHiddenSignedOut,
+                              style:
+                                  TextStyle(fontSize: 14, color: c.textTertiary),
+                            ),
+                          ),
+                      ],
+                    ),
+                  );
+                },
               ),
 
               const SizedBox(height: 24),
@@ -910,6 +949,79 @@ class _ReviewCard extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+/// AppBar action toggling a block on [otherCompany] for [myCompanyId]. The
+/// record itself is just a courtesy read for THIS button's own state — the
+/// actual enforcement (stops a blocked company sending or receiving a new
+/// contact_request) lives in firestore.rules' isBlockedEitherWay(), checked
+/// server-side at contact_requests create time.
+class _BlockMenuButton extends ConsumerWidget {
+  final String myCompanyId;
+  final CompanyModel otherCompany;
+  const _BlockMenuButton({required this.myCompanyId, required this.otherCompany});
+
+  Future<void> _toggle(BuildContext context, WidgetRef ref, bool currentlyBlocked) async {
+    final l = AppLocalizations.of(context);
+    final c = AppColors.of(context);
+    if (!currentlyBlocked) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: c.surface,
+          title: Text(l.blockCompanyConfirmTitle,
+              style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.w900, fontSize: 17)),
+          content: Text(l.blockCompanyConfirmBody(otherCompany.name),
+              style: TextStyle(color: c.textSecondary, fontSize: 14, height: 1.5)),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(l.cancel)),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(l.blockCompanyAction,
+                  style: const TextStyle(color: AppColors.error, fontWeight: FontWeight.w900)),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+    try {
+      final service = ref.read(blockServiceProvider);
+      if (currentlyBlocked) {
+        await service.unblockCompany(
+            blockerCompanyId: myCompanyId, blockedCompanyId: otherCompany.id);
+      } else {
+        await service.blockCompany(
+            blockerCompanyId: myCompanyId, blockedCompanyId: otherCompany.id);
+      }
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(currentlyBlocked ? l.companyUnblockedSnackbar : l.companyBlockedSnackbar),
+          backgroundColor: currentlyBlocked ? AppColors.live : AppColors.error,
+        ));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(l.errorWithMessage(e)), backgroundColor: AppColors.error));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = AppLocalizations.of(context);
+    final c = AppColors.of(context);
+    final blocked = ref.watch(isBlockedByMeProvider(otherCompany.id)).valueOrNull ?? false;
+    return IconButton(
+      tooltip: blocked ? l.unblockCompanyAction : l.blockCompanyAction,
+      icon: Icon(
+        blocked ? Icons.block : Icons.block_outlined,
+        color: blocked ? AppColors.error : c.textSecondary,
+      ),
+      onPressed: () => _toggle(context, ref, blocked),
     );
   }
 }

@@ -277,8 +277,8 @@ class _CapacityDetailScreenState
   Widget _buildTrustBlock(AppLocalizations l, dynamic c, {required bool revealed}) {
     final capacity = widget.capacity;
     final ratingText = capacity.posterRatingCount > 0
-        ? l.trustRatingSummary(
-            capacity.posterRating.toStringAsFixed(1), capacity.posterRatingCount)
+        ? l.trustRatingSummary(capacity.posterRating.toStringAsFixed(1),
+            capacity.posterRatingCountDisplay)
         : l.trustNoRatingsYet;
     return Container(
       padding: const EdgeInsets.all(16),
@@ -546,6 +546,7 @@ class _CapacityDetailScreenState
             Icons.arrow_back,
             color: c.textPrimary,
           ),
+          tooltip: MaterialLocalizations.of(context).backButtonTooltip,
           onPressed: () => Navigator.pop(context),
         ),
         title: Text(
@@ -577,6 +578,7 @@ class _CapacityDetailScreenState
                           ? AppColors.primary
                           : c.textSecondary,
                     ),
+              tooltip: _isFavorited ? l.removeFavoriteTooltip : l.addFavoriteTooltip,
               onPressed: _toggleFavorite,
             ),
           const SizedBox(width: 8),
@@ -587,6 +589,11 @@ class _CapacityDetailScreenState
           // Scrollable content
           Expanded(
             child: SingleChildScrollView(
+              // Clamping physics — see the matching comment in
+              // live_capacity_feed_screen.dart: bouncing overscroll desyncs
+              // the HTML <img> CompanyLogoAvatar from the canvas-rendered
+              // card during the rubber-band animation.
+              physics: const ClampingScrollPhysics(),
               padding: const EdgeInsets.all(20),
               child: Column(
                 crossAxisAlignment:

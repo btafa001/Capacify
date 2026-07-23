@@ -60,9 +60,13 @@ class CapacityModel {
   final DateTime? cancelledAt;
   final int? dealNumber;
   final bool contentFlagged;
-  // Non-identifying trust signals snapshotted from the poster's company at
-  // post time. Aggregate (many firms share them) — NOT a stable per-company
-  // identifier, so they build confidence without revealing who posted.
+  // Trust signals snapshotted from the poster's company at post time, stored
+  // COARSENED — see the banding helpers below. Exact aggregates here were a
+  // de-anonymization hole, not the "non-identifying" signal this comment used
+  // to claim: the public post and the public companies collection carry the
+  // same numbers, so an exact (ratingSum, ratingCount, avgResponseHours) tuple
+  // could be joined straight back against the directory to name an anonymous
+  // poster. A sum of 47 over 11 reviews is a fingerprint, not an aggregate.
   final bool posterVerified;
   final int posterRatingSum;
   final int posterRatingCount;
@@ -99,6 +103,67 @@ class CapacityModel {
 
   double get posterRating =>
       posterRatingCount > 0 ? posterRatingSum / posterRatingCount : 0.0;
+
+  // ─── Poster trust-signal banding ───
+  // Everything written onto the world-readable post is coarsened to a band
+  // that many companies share, so the trust signals can't be used as a join
+  // key against the (equally public) companies collection to identify an
+  // anonymous poster.
+  //
+  // Applied to EVERY post regardless of visibilityMode, deliberately: one
+  // unconditional rule means no mode-detection bug can ever leak the exact
+  // numbers, and for a visible/discreet poster the precise score is already
+  // one tap away on their public profile, so nothing is actually lost.
+  //
+  // Bands only ever move AGAINST the poster — rating and review count round
+  // down, response time rounds up — so a displayed signal never overstates.
+
+  static const List<int> _ratingCountBands = [100, 50, 20, 10, 5];
+
+  /// Review count floored onto a shared band (5/10/20/50/100). Counts under 5
+  /// are left exact: rounding them UP to "5+" would overstate, and a handful
+  /// of reviews is common enough not to single a company out on its own.
+  static int bandRatingCount(int count) {
+    if (count < 5) return count < 0 ? 0 : count;
+    for (final band in _ratingCountBands) {
+      if (count >= band) return band;
+    }
+    return count;
+  }
+
+  /// Rating sum re-derived so `sum / count` lands exactly on a half-star floor
+  /// (4.7 → 4.5), paired with [bandRatingCount] so the stored ratio stays
+  /// consistent with the stored count. Storing the banded pair (rather than a
+  /// separate band field) keeps the existing posterRating getter and every
+  /// display call site working unchanged.
+  static int bandRatingSum(int sum, int count) {
+    if (count <= 0 || sum <= 0) return 0;
+    final flooredAvg = ((sum / count) * 2).floor() / 2;
+    return (flooredAvg * bandRatingCount(count)).round();
+  }
+
+  static const List<int> _responseHourBands = [2, 4, 8, 24, 48, 72];
+
+  /// Response time raised to the next band ceiling (3h → 4h), so it never
+  /// claims a poster is faster than they are.
+  ///
+  /// Past the last band it rounds up to whole days rather than pinning to a
+  /// fixed ceiling: a fixed cap would report "~96h" for a poster who really
+  /// takes a week, understating them — the one direction this must never
+  /// move. Day granularity is still coarse, and very few posters live out
+  /// here anyway.
+  static int? bandResponseHours(int? hours) {
+    if (hours == null) return null;
+    for (final band in _responseHourBands) {
+      if (hours <= band) return band;
+    }
+    return ((hours + 23) ~/ 24) * 24;
+  }
+
+  /// "10+" once the stored count is banded, the exact number below the first
+  /// band. Always truthful, since a banded count is a floor of the real one.
+  String get posterRatingCountDisplay =>
+      posterRatingCount >= 5 ? '$posterRatingCount+' : '$posterRatingCount';
 
   /// Looks up the approximate centroid for a known Hamburg district string —
   /// null if [location] doesn't exactly match one (see kHamburgDistrictCoordinates).
@@ -232,10 +297,15 @@ class CapacityModel {
       'interestCount': interestCount,
       'contentFlagged': contentFlagged,
       'posterVerified': posterVerified,
-      'posterRatingSum': posterRatingSum,
-      'posterRatingCount': posterRatingCount,
+      // Banded on the way out — this is the single choke point every post
+      // creation goes through, so callers may keep passing the company's exact
+      // figures without ever landing them on the public doc. Banding is
+      // idempotent, so re-serializing an already-banded post is a no-op.
+      'posterRatingSum': bandRatingSum(posterRatingSum, posterRatingCount),
+      'posterRatingCount': bandRatingCount(posterRatingCount),
       'posterSuspended': posterSuspended,
-      if (posterAvgResponseHours != null) 'posterAvgResponseHours': posterAvgResponseHours,
+      if (posterAvgResponseHours != null)
+        'posterAvgResponseHours': bandResponseHours(posterAvgResponseHours),
       if (districtCoordinates != null) 'districtCoordinates': districtCoordinates,
       'dayRateBand': dayRateBand,
       'skillDetails': skillDetails,

@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'contact_request_service.dart';
 import 'capacity_provider.dart';
 import '../models/contact_request_model.dart';
+import '../utils/listener_diagnostics.dart';
 
 final contactRequestServiceProvider =
     Provider<ContactRequestService>((ref) => ContactRequestService());
@@ -32,15 +33,27 @@ final contactRequestByIdProvider =
 
 /// Requests directed at the poster's own posts ("Erhaltene Anfragen").
 /// Composed from the poster's own posts → their postIds → received requests.
+///
+/// Note this re-subscribes every time myCapacitiesProvider emits, so the
+/// underlying listener is rebuilt several times during startup. Every branch of
+/// the contact_requests read rule needs request.auth.uid, and a denied listener
+/// is terminal (see listener_diagnostics.dart) — hence the logging, and the
+/// retry the screen now offers on error.
 final receivedRequestsProvider =
     StreamProvider.family<List<ContactRequestModel>, String>((ref, companyId) {
   final posts = ref.watch(myCapacitiesProvider(companyId)).valueOrNull ?? [];
   final postIds = posts.map((p) => p.id).toList();
-  return ref.watch(contactRequestServiceProvider).receivedRequests(postIds);
+  return ref
+      .watch(contactRequestServiceProvider)
+      .receivedRequests(postIds)
+      .logPermissionDenials('receivedRequests');
 });
 
 /// Founder/admin queue of all contact requests.
 final allContactRequestsProvider =
     StreamProvider<List<ContactRequestModel>>((ref) {
-  return ref.watch(contactRequestServiceProvider).allRequests();
+  return ref
+      .watch(contactRequestServiceProvider)
+      .allRequests()
+      .logPermissionDenials('allContactRequests');
 });

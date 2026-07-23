@@ -11,7 +11,7 @@ import '../../core/localization/app_localizations.dart';
 ///
 /// [companyId], when given, is appended as ?ref={companyId} so a signup via
 /// this link is attributable back to the inviter (see AuthService's
-/// _referrerFromUrl and CompanyModel.referredBy) — shown back to the inviter
+/// referrerFromUrl and CompanyModel.referredBy) — shown back to the inviter
 /// as an "Empfehlungen: Nx" count in Settings.
 Future<void> showInviteDialog(BuildContext context, {String? companyId}) {
   return showDialog(
@@ -79,6 +79,7 @@ class InviteDialog extends StatelessWidget {
                   IconButton(
                     onPressed: () => Navigator.of(context).pop(),
                     icon: Icon(Icons.close_rounded, color: c.textTertiary, size: 20),
+                    tooltip: l.closeTooltip,
                     splashRadius: 18,
                   ),
                 ],

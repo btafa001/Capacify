@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/company_provider.dart';
+import '../../core/localization/app_localizations.dart';
 
 /// Read-only star row for an average rating (supports half stars).
 class StarRatingDisplay extends StatelessWidget {
@@ -42,18 +43,24 @@ class StarRatingInput extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: List.generate(5, (i) {
         final starValue = i + 1;
-        return GestureDetector(
-          onTap: () => onChanged(starValue),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 2),
-            child: Icon(
-              starValue <= value ? Icons.star : Icons.star_border,
-              size: size,
-              color: AppColors.accent,
+        return Semantics(
+          button: true,
+          label: l.rateStarsTooltip(starValue),
+          selected: starValue <= value,
+          child: GestureDetector(
+            onTap: () => onChanged(starValue),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              child: Icon(
+                starValue <= value ? Icons.star : Icons.star_border,
+                size: size,
+                color: AppColors.accent,
+              ),
             ),
           ),
         );

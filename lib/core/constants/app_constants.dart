@@ -60,6 +60,13 @@ const String kFcmVapidKey = 'BOeNM4nx46oJBq5fouSIjdYgb7r1b6Hev4zqY1gPIrhq8qUyHRs
 // Apple in the Firebase Console, then flip this to true. No other code change.
 const bool kAppleSignInEnabled = false;
 
+// Revision of the AGB + Datenschutzerklärung the signup consent checkbox
+// refers to. Stored alongside the acceptance timestamp on the user doc
+// (AuthService.recordLegalConsent) so an acceptance always records WHAT was
+// accepted — a bare boolean is worth little if the terms have since changed.
+// Bump this (YYYY-MM) whenever either document changes materially.
+const String kLegalTermsVersion = '2026-07';
+
 const List<String> kTrades = [
   'Rohbau',
   'Trockenbau',

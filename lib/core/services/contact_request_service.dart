@@ -149,10 +149,14 @@ class ContactRequestService {
           .limit(500)
           .get();
       if (owned.docs.isEmpty) return;
+      // Banded before it touches the public post — an exact hour figure is one
+      // more field an anonymous post can be joined on (see
+      // CapacityModel.bandResponseHours).
+      final banded = CapacityModel.bandResponseHours(avgHours);
       final batch = _firestore.batch();
       for (final doc in owned.docs) {
         batch.update(_firestore.collection('capacities').doc(doc.id), {
-          'posterAvgResponseHours': avgHours ?? FieldValue.delete(),
+          'posterAvgResponseHours': banded ?? FieldValue.delete(),
         });
       }
       await batch.commit();

@@ -20,6 +20,9 @@ class SeedService {
     final companyBatch = _db.batch();
     for (final id in companyIds) {
       companyBatch.delete(_db.collection('companies').doc(id));
+      // Paired sidecar — or clearing the demo set would leave orphaned
+      // contact records behind.
+      companyBatch.delete(_db.collection('companyContacts').doc(id));
     }
     await companyBatch.commit();
 
@@ -125,13 +128,28 @@ class SeedService {
 
   // ── Companies ────────────────────────────────────────
 
+  // Contact keys are split out of each demo record into the gated
+  // companyContacts sidecar, exactly like a real company (see CompanyModel's
+  // class doc) — seeding them inline would put demo contact data back on the
+  // world-readable doc and make the demo directory behave differently from
+  // production, which is the one thing demo data must not do.
+  static const _contactKeys = ['email', 'phone', 'address', 'postalCode'];
+
   Future<void> _seedCompanies() async {
     final batch = _db.batch();
     for (final c in _companies()) {
       final id = c['id'] as String;
       final data = Map<String, dynamic>.from(c)..remove('id');
+      final contact = <String, dynamic>{
+        for (final k in _contactKeys) k: data.remove(k) ?? '',
+      };
       data['createdAt'] = FieldValue.serverTimestamp();
+      data['profileComplete'] = true;
       batch.set(_db.collection('companies').doc(id), data);
+      batch.set(
+        _db.collection('companyContacts').doc(id),
+        {...contact, 'updatedAt': FieldValue.serverTimestamp()},
+      );
     }
     await batch.commit();
   }

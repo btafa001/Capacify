@@ -1,6 +1,20 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../localization/app_localizations.dart';
 
+/// A company profile.
+///
+/// `email` / `phone` / `address` / `postalCode` are NOT stored on the public
+/// `companies/{id}` document — that doc is world-readable so anonymous
+/// visitors can browse the directory, which also handed an unauthenticated
+/// REST read a clean, structured list of every company's contact data. They
+/// live in the gated `companyContacts/{id}` sidecar instead (see
+/// firestore.rules) and are merged onto this model only where the reader is
+/// entitled to them: the owner's own company (CompanyService.getCompanyByOwner),
+/// an admin listing, or a single verified-user lookup on the detail screen.
+///
+/// A model loaded straight from the public doc therefore carries EMPTY contact
+/// strings. That is the correct, safe default — display code already guards on
+/// `isNotEmpty`, so a viewer without entitlement simply sees no contact block.
 class CompanyModel {
   final String id;
   final String ownerId;
@@ -27,6 +41,34 @@ class CompanyModel {
   // card to give the founder a confident Freigabe. Never auto-verifies.
   final bool vatValid;
   final String vatVerifiedName;
+  // Whether the OWNER's Firebase Auth account had a verified email the last
+  // time this field was written. Stamped at creation from the caller's own
+  // ID token (request.auth.token.email_verified) and flipped false→true the
+  // same way by AuthService.reloadAndCheckEmailVerified once the owner
+  // actually clicks the verification link — never true→false, and never any
+  // other value than what the owner's own token proves (see firestore.rules).
+  // Directory listing (CompanyService.getCompanies) hides companies until
+  // this is true, closing the pre-verification window where a throwaway
+  // Gmail signup could sit in the public directory indefinitely.
+  final bool emailVerified;
+  // True only for docs written before the emailVerified field existed at all
+  // (the key is literally absent from Firestore, not just false) — set in
+  // fromFirestore, never written back. Every company created since this
+  // feature shipped always has the key (see toFirestore/auth_service.dart),
+  // so this can't be forged by a new signup. Grandfathers the pre-existing
+  // directory in isDirectoryEligible below: without it, EVERY company that
+  // registered before this fix would vanish from the directory the instant
+  // it shipped, since a bare `?? false` default reads exactly like "never
+  // verified" for a company that in reality just predates the field.
+  final bool legacyBeforeEmailVerificationGate;
+  // Snapshot of isProfileComplete kept on the PUBLIC company doc, written on
+  // every create/save from the full in-memory model (which does have the
+  // contact fields). The public directory listing reads this instead of
+  // recomputing — see isDirectoryEligible. On documents that predate the
+  // contact split the key is absent, and fromFirestore falls back to computing
+  // it from the inline contact fields those documents still carry, so the
+  // directory keeps working until the one-off contact migration runs.
+  final bool storedProfileComplete;
   final int ratingSum;
   final int ratingCount;
   // Responsiveness signal — running sum+count of how long this company took to
@@ -85,6 +127,26 @@ class CompanyModel {
 
   bool get isVerified => verificationStatus == 'verified';
   double get avgRating => ratingCount > 0 ? ratingSum / ratingCount : 0.0;
+
+  // Gate for the public directory listing (see CompanyService.getCompanies)
+  // — H3 fix: a fake/throwaway account used to appear in the public directory
+  // immediately at registration, before email verification and regardless of
+  // whether the profile had anything real in it. contentFlagged/suspended
+  // still apply to every company regardless of age; the emailVerified +
+  // isProfileComplete bar is skipped for companies that predate the gate
+  // (legacyBeforeEmailVerificationGate) so the fix doesn't retroactively
+  // empty out the directory of everyone who signed up before it shipped.
+  //
+  // Uses the STORED completeness flag, not the computed isProfileComplete
+  // getter: completeness is derived from phone/address, which now live in the
+  // gated companyContacts sidecar, and the directory listing only ever reads
+  // the public doc. Recomputing there would see empty contact strings and
+  // silently empty out the entire directory.
+  bool get isDirectoryEligible =>
+      !contentFlagged &&
+      !suspended &&
+      (legacyBeforeEmailVerificationGate ||
+          (emailVerified && storedProfileComplete));
 
   /// Average response time, in hours (rounded up, min 1) — only meaningful once
   /// there are enough samples. Null until then, so the UI can hide the signal
@@ -166,6 +228,9 @@ class CompanyModel {
     this.verificationStatus = 'none',
     this.vatValid = false,
     this.vatVerifiedName = '',
+    this.emailVerified = false,
+    this.legacyBeforeEmailVerificationGate = false,
+    this.storedProfileComplete = false,
     this.ratingSum = 0,
     this.ratingCount = 0,
     this.responseCount = 0,
@@ -240,7 +305,13 @@ class CompanyModel {
     String? verificationStatus,
     bool? vatValid,
     String? vatVerifiedName,
+    bool? emailVerified,
     int? ratingSum,
+    // legacyBeforeEmailVerificationGate deliberately has no param here — it's
+    // Firestore-parse-time provenance (fromFirestore only), never something
+    // app code should set. Always carried over from `this` below so a
+    // copyWith() elsewhere (e.g. a logo update) can't accidentally reset a
+    // pre-existing company back to the strict post-gate directory check.
     int? ratingCount,
     int? responseCount,
     int? responseSumMs,
@@ -279,6 +350,13 @@ class CompanyModel {
       verificationStatus: verificationStatus ?? this.verificationStatus,
       vatValid: vatValid ?? this.vatValid,
       vatVerifiedName: vatVerifiedName ?? this.vatVerifiedName,
+      emailVerified: emailVerified ?? this.emailVerified,
+      legacyBeforeEmailVerificationGate: legacyBeforeEmailVerificationGate,
+      // Derived-at-save, same as legacyBeforeEmailVerificationGate above:
+      // carried over rather than exposed as a param, so a copyWith (e.g. the
+      // contact merge) can't leave a stale value behind. Recomputed by
+      // toFirestore on the next real save.
+      storedProfileComplete: storedProfileComplete,
       ratingSum: ratingSum ?? this.ratingSum,
       ratingCount: ratingCount ?? this.ratingCount,
       responseCount: responseCount ?? this.responseCount,
@@ -331,6 +409,23 @@ class CompanyModel {
       verificationStatus: data['verificationStatus'] ?? 'none',
       vatValid: data['vatValid'] as bool? ?? false,
       vatVerifiedName: data['vatVerifiedName'] as String? ?? '',
+      emailVerified: data['emailVerified'] as bool? ?? false,
+      legacyBeforeEmailVerificationGate: !data.containsKey('emailVerified'),
+      // Absent on every doc written before the contact split — those still
+      // carry inline phone/address, so compute it from them rather than
+      // defaulting to false, which would drop the whole pre-existing directory
+      // the moment this shipped. The contact migration stamps the real flag as
+      // it strips those fields.
+      storedProfileComplete: data.containsKey('profileComplete')
+          ? (data['profileComplete'] as bool? ?? false)
+          : calculateCompleteness(
+                description: data['description'] ?? '',
+                website: data['website'] ?? '',
+                phone: data['phone'] ?? '',
+                address: data['address'] ?? '',
+                trades: trades,
+              ) >=
+              1.0,
       ratingSum: data['ratingSum'] ?? 0,
       ratingCount: data['ratingCount'] ?? 0,
       responseCount: data['responseCount'] ?? 0,
@@ -363,11 +458,11 @@ class CompanyModel {
       'description': description,
       'certifications': certifications,
       'website': website,
-      'email': email,
-      'phone': phone,
-      'address': address,
+      // email/phone/address/postalCode deliberately absent — they belong to
+      // the gated companyContacts sidecar (see toContactFirestore below and
+      // the class doc). city/country stay public: the directory filters and
+      // searches on city, and neither pinpoints a street address.
       'city': city,
-      'postalCode': postalCode,
       'country': country,
       'employees': employees,
       'trades': trades,
@@ -375,6 +470,15 @@ class CompanyModel {
       'logoUrl': logoUrl,
       'vatNumber': vatNumber,
       'verificationStatus': verificationStatus,
+      // Public snapshot of completeness — the directory listing can no longer
+      // derive it, since the fields it depends on are gated. See
+      // storedProfileComplete / isDirectoryEligible.
+      'profileComplete': isProfileComplete,
+      // Must equal the caller's own request.auth.token.email_verified at
+      // creation time (firestore.rules enforces this) — callers building this
+      // CompanyModel are expected to pass the current FirebaseAuth user's own
+      // emailVerified, not a hardcoded default.
+      'emailVerified': emailVerified,
       'ratingSum': ratingSum,
       'ratingCount': ratingCount,
       'contentFlagged': contentFlagged,
@@ -403,11 +507,19 @@ class CompanyModel {
       'description': description,
       'certifications': certifications,
       'website': website,
-      'email': email,
-      'phone': phone,
-      'address': address,
+      // Contact goes to the gated sidecar (toContactFirestore), never here.
+      // The explicit deletes below are the cleanup path for documents written
+      // before the split: update() only touches the keys it is given, so
+      // without these a company that never re-saves — or one that does — would
+      // keep its old inline contact sitting on the world-readable doc forever.
+      // Deleting an already-absent field is a no-op, so this is safe to
+      // repeat and safe on freshly-created docs.
+      'email': FieldValue.delete(),
+      'phone': FieldValue.delete(),
+      'address': FieldValue.delete(),
+      'postalCode': FieldValue.delete(),
+      'profileComplete': isProfileComplete,
       'city': city,
-      'postalCode': postalCode,
       'country': country,
       'employees': employees,
       'trades': trades,
@@ -419,5 +531,34 @@ class CompanyModel {
       // Preserve/refresh the rename-cooldown stamp (only ever set on a rename).
       if (lastNameChangeAt != null) 'lastNameChangeAt': Timestamp.fromDate(lastNameChangeAt!),
     };
+  }
+
+  /// The gated `companyContacts/{id}` sidecar payload — the ONLY place a
+  /// company's email/phone/address/postalCode is written.
+  ///
+  /// The key set here must stay in sync with the `keys().hasOnly([...])`
+  /// allowlist on that collection in firestore.rules; anything added here that
+  /// isn't allowlisted there will be rejected on write.
+  Map<String, dynamic> toContactFirestore() {
+    return {
+      'email': email,
+      'phone': phone,
+      'address': address,
+      'postalCode': postalCode,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+  }
+
+  /// Returns a copy with the contact block merged in — used wherever the
+  /// reader is actually entitled to it (owner, admin, verified lookup). Null
+  /// [contact] leaves the empty public-doc values untouched.
+  CompanyModel withContact(Map<String, dynamic>? contact) {
+    if (contact == null) return this;
+    return copyWith(
+      email: contact['email'] as String? ?? '',
+      phone: contact['phone'] as String? ?? '',
+      address: contact['address'] as String? ?? '',
+      postalCode: contact['postalCode'] as String? ?? '',
+    );
   }
 }

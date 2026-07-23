@@ -10,9 +10,22 @@ service cloud.firestore {
     // isAdmin is a manually-set flag on the user's own doc (see
     // users/{uid} below) — never settable via the client SDK, only from
     // the Firebase Console, so this can't be self-granted.
+    //
+    // exists() + .get('isAdmin', false), NOT a bare .data.isAdmin: auth_service.dart
+    // never writes an isAdmin key when it creates a user doc, so on EVERY normal
+    // (non-admin) account that field is simply absent — and a bare .data.isAdmin on
+    // a doc missing the key errors the whole expression rather than evaluating
+    // false. Because this helper is OR'd into the middle of other rules, that error
+    // aborted the entire chain and denied the request before the branch that would
+    // legitimately have allowed it was ever reached (contact_requests read below is
+    // exactly that shape — it was why a normal account could never open Erhaltene
+    // Anfragen while an admin account, whose doc does carry the key, was fine).
+    // Same failure mode, and same .get(key, default) fix, as the users/{uid} update
+    // rule further down already documents for 'plan'.
     function isAdmin() {
-      return isSignedIn() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isAdmin', false) == true;
     }
 
     // True if `reqId` names a GRANTED contact_request that actually connects
@@ -36,6 +49,96 @@ service cloud.firestore {
           || ( get(/databases/$(database)/documents/contact_requests/$(reqId)).data.requesterCompanyId == companyB
                && get(/databases/$(database)/documents/capacityOwners/$(get(/databases/$(database)/documents/contact_requests/$(reqId)).data.postId)).data.posterCompanyId == companyA )
         );
+    }
+
+    // True if either company has blocked the other (userBlocks/{blockerId}_
+    // {blockedId} — see that collection below). Checked both directions since
+    // a block should stop contact regardless of who initiates: the blocker
+    // shouldn't be re-contacted by the company they blocked, and shouldn't be
+    // able to accidentally re-open contact with them either. Used by
+    // contact_requests' create rule — the only place NEW contact between two
+    // companies originates (anonymous-mode posts don't even reveal the
+    // poster's identity to the requester until here, via the capacityOwners
+    // get() below, so this is also the earliest point a block CAN be
+    // enforced for that mode, not just a convenience check).
+    function isBlockedEitherWay(companyA, companyB) {
+      return exists(/databases/$(database)/documents/userBlocks/$(companyA + '_' + companyB))
+          || exists(/databases/$(database)/documents/userBlocks/$(companyB + '_' + companyA));
+    }
+
+    // The caller's OWN company doc — the server-pinned source of truth for
+    // every trust signal a post snapshots (verificationStatus/ratingSum/
+    // ratingCount are all admin-only on companies/{companyId}, see that rule).
+    // exists() is split out so a caller with no company doc yet fails the
+    // branch instead of erroring the whole rule on a get() of a missing doc.
+    function callerCompanyExists() {
+      return exists(/databases/$(database)/documents/companies/$(request.auth.uid));
+    }
+
+    function callerCompany() {
+      return get(/databases/$(database)/documents/companies/$(request.auth.uid)).data;
+    }
+
+    // ─── Poster identity + trust snapshots on a public post (owner update) ───
+    // H1 fix. The capacities CREATE rule carefully cross-checks identity
+    // against the caller's own company doc — but the owner-UPDATE branch used
+    // to pin only contentFlagged/posterSuspended/dealNumber, so everything
+    // create prevents was reachable one write later: an owner could publish a
+    // clean post and then update() their own doc to set posterVerified: true,
+    // inflate posterRatingSum/posterRatingCount, flip visibilityMode, or paste
+    // a competitor's posterCompanyName/posterLogoUrl onto it.
+    //
+    // Shape per field: "unchanged OR honest against the caller's own company
+    // doc". The unchanged branch is what keeps every ordinary edit working —
+    // CapacityModel.toFirestoreForUpdate never sends these keys, and an
+    // update() leaves absent keys alone, so on a normal save the RESULTING
+    // document (which is what request.resource.data is) still carries exactly
+    // the stored values. The honest branch is what
+    // CapacityService.updateCompanyNameOnAllPosts and
+    // ContactRequestService._syncResponseStatToPosts legitimately do.
+    //
+    // The numeric signals are checked as BOUNDS, not equality, because the
+    // client stores them BANDED (CapacityModel.bandRatingSum/bandRatingCount/
+    // bandResponseHours) and a band only ever moves AGAINST the poster —
+    // ratings round down, response time rounds up. A bound therefore admits
+    // every honest banded value while still making it impossible to claim more
+    // than the company doc actually holds, and — unlike re-deriving the exact
+    // band here — it can't silently deny every profile save the day a band
+    // boundary is tuned in Dart. Under-reporting is self-harm, so it's free.
+    //
+    // Identity (the first four pins below) is chosen once at create — where
+    // it's cross-checked against the caller's own company doc — and never
+    // edited by the client afterwards: visibilityMode is deliberately excluded
+    // from toFirestoreForUpdate, and the live identity/contact lives on the
+    // capacityOwners sidecar, not here. So those are flat pins, no exception.
+    function ownerPostSnapshotsHonest() {
+      return request.resource.data.get('visibilityMode', 'anonymous') == resource.data.get('visibilityMode', 'anonymous')
+        && request.resource.data.get('posterCompanyId', '') == resource.data.get('posterCompanyId', '')
+        && request.resource.data.get('posterCompanyName', '') == resource.data.get('posterCompanyName', '')
+        && request.resource.data.get('posterLogoUrl', '') == resource.data.get('posterLogoUrl', '')
+        // Verified badge: only ever what the caller's own company doc says,
+        // and that field is admin/Cloud-Function-only over there.
+        && ( request.resource.data.get('posterVerified', false) == resource.data.get('posterVerified', false)
+             || ( callerCompanyExists()
+                  && request.resource.data.get('posterVerified', false) ==
+                       (callerCompany().get('verificationStatus', 'none') == 'verified') ) )
+        // Rating pair: never above the (banded-down) real totals.
+        && ( ( request.resource.data.get('posterRatingSum', 0) == resource.data.get('posterRatingSum', 0)
+               && request.resource.data.get('posterRatingCount', 0) == resource.data.get('posterRatingCount', 0) )
+             || ( callerCompanyExists()
+                  && request.resource.data.get('posterRatingSum', 0) <= callerCompany().get('ratingSum', 0)
+                  && request.resource.data.get('posterRatingCount', 0) <= callerCompany().get('ratingCount', 0) ) )
+        // "Antwortet in ~Xh": the claimed hours must be at least the poster's
+        // REAL average (hours * 3600000 * samples >= total ms — multiplied out
+        // rather than divided so a zero sample count can't divide by zero),
+        // behind the same >=3-sample floor the client applies. Dropping the
+        // field entirely is a self-downgrade and always allowed.
+        && ( request.resource.data.get('posterAvgResponseHours', 0) == resource.data.get('posterAvgResponseHours', 0)
+             || !('posterAvgResponseHours' in request.resource.data)
+             || ( callerCompanyExists()
+                  && callerCompany().get('responseCount', 0) >= 3
+                  && request.resource.data.posterAvgResponseHours * 3600000 * callerCompany().get('responseCount', 0)
+                       >= callerCompany().get('responseSumMs', 0) ) );
     }
 
     // Zero-padded 'YYYY-MM-DD' for the server's request time (UTC) — used by the
@@ -113,6 +216,18 @@ service cloud.firestore {
     // un-suspend itself right back out of the consequence. .get(key, default)
     // is used (rather than a bare field reference) since these two fields are
     // absent on every company doc that predates this feature.
+    //
+    // completedCollaborations/repeatCollaborations and vatValid/vatVerifiedName
+    // are server-authored trust BADGES — written only by Cloud Functions via the
+    // Admin SDK (onCollabConfirmed, verifyMyCompany) — and are pinned in the
+    // owner branch for the same reason as ratingSum: an owner could otherwise
+    // SDK-write completedCollaborations: 999 / vatValid: true onto their own doc
+    // and forge the credibility company_detail_screen renders, bypassing all of
+    // onCollabConfirmed's VAT-gate + velocity-cap + mutual-confirm machinery.
+    // lastActiveAt and responseCount/responseSumMs are trust SIGNALS the client
+    // itself legitimately writes (login stamp; per-Accept response-time sample),
+    // so they can't be flat-pinned — they're instead constrained to their honest
+    // write shape (unchanged, or the exact one-step the app performs).
     match /companies/{companyId} {
       allow read: if true;
       // verificationStatus must start at 'none' — 'pending' is reachable ONLY
@@ -123,10 +238,19 @@ service cloud.firestore {
       // ausstehend" trust badge for zero verification. Closed here rather
       // than trusted to the client, which no longer even tries (see
       // company_profile_screen.dart).
+      // emailVerified — H3 fix: the directory used to list every company the
+      // instant it was created, before email verification and before any VAT
+      // check, so throwaway Gmail signups could sit in the public directory
+      // indefinitely (see CompanyModel.isDirectoryEligible, which
+      // CompanyService.getCompanies filters on). Must equal the caller's own
+      // token claim at creation — true immediately for Google/Apple (already
+      // verified by the provider), false for a fresh email/password account —
+      // so a client can't just write emailVerified: true to skip the gate.
       allow create: if isSignedIn() && request.auth.uid == companyId
         && request.resource.data.verificationStatus == 'none'
         && request.resource.data.contentFlagged == false
-        && request.resource.data.get('suspended', false) == false;
+        && request.resource.data.get('suspended', false) == false
+        && request.resource.data.get('emailVerified', false) == request.auth.token.email_verified;
       allow update: if isAdmin()
         || (isSignedIn() && request.auth.uid == companyId
             && request.resource.data.verificationStatus == resource.data.verificationStatus
@@ -134,8 +258,111 @@ service cloud.firestore {
             && request.resource.data.ratingCount == resource.data.ratingCount
             && request.resource.data.get('suspended', false) == resource.data.get('suspended', false)
             && request.resource.data.get('suspensionReason', '') == resource.data.get('suspensionReason', '')
+            // Server-authored trust badges — written ONLY by Cloud Functions via
+            // the Admin SDK (onCollabConfirmed increments the collaboration
+            // counts behind its VAT-verified + 30-day-velocity + mutual-confirm
+            // gate; verifyMyCompany sets the VAT pair after a real VIES check),
+            // so an owner's own profile save must leave them exactly as they are.
+            // Without these pins an owner could SDK-write completedCollaborations:
+            // 999 or vatValid: true straight onto their own doc — forging the
+            // "X abgeschlossene Zusammenarbeiten" / VAT-verified signals
+            // company_detail_screen renders and bypassing all of that machinery.
+            // .get(key, default) because each is ABSENT until the first collab/
+            // verification (toFirestore never writes them at creation) — a bare
+            // field ref would error the rule and deny every profile save on a doc
+            // that hasn't earned a badge yet, same as suspended/suspensionReason.
+            && request.resource.data.get('completedCollaborations', 0) == resource.data.get('completedCollaborations', 0)
+            && request.resource.data.get('repeatCollaborations', 0) == resource.data.get('repeatCollaborations', 0)
+            && request.resource.data.get('vatValid', false) == resource.data.get('vatValid', false)
+            && request.resource.data.get('vatVerifiedName', '') == resource.data.get('vatVerifiedName', '')
+            // vatNumberNormalized (H4 fix) is the equality-lookup key
+            // enforceCompanyIntegrity queries for duplicate-VAT detection —
+            // same admin-only shape as vatValid/vatVerifiedName above. Left
+            // client-writable, an owner could clear it to dodge the dedup
+            // query, or set it to someone else's normalized VAT to frame them.
+            && request.resource.data.get('vatNumberNormalized', '') == resource.data.get('vatNumberNormalized', '')
+            // emailVerified (H3 fix, see the create branch above and
+            // CompanyModel.isDirectoryEligible) — a profile save must leave it
+            // unchanged UNLESS it's flipping false→true, and even then only
+            // when the caller's own token actually proves it now (the
+            // "I've verified" refresh in email_verification_banner.dart calls
+            // AuthService.reloadAndCheckEmailVerified, which does
+            // getIdToken(true) BEFORE writing emailVerified: true, so the
+            // fresh claim is already on the token by the time this rule sees
+            // the write. Never reachable true→false, and never settable to
+            // true by a token that doesn't itself claim verified.
+            && ( request.resource.data.get('emailVerified', false) == resource.data.get('emailVerified', false)
+                 || ( request.resource.data.get('emailVerified', false) == true
+                      && request.auth.token.email_verified == true ) )
+            // lastActiveAt and responseCount/responseSumMs are trust signals too
+            // ("zuletzt aktiv", "antwortet in ~Xh"), but — unlike the badges above
+            // — the client itself legitimately writes them, so they can't be
+            // flat-pinned without breaking the app. Constrain them to their honest
+            // shape instead:
+            //  • lastActiveAt: auth_service.touchLastActive stamps it on login.
+            //    Allow unchanged, or exactly request.time (what serverTimestamp()
+            //    resolves to here) — blocks future/backdating a liveness the
+            //    honest login already grants for free.
+            //  • responseCount/responseSumMs: contact_request_service
+            //    ._recordResponseTime adds ONE sample per Accept/Decline of an
+            //    anonymous-mode request (count +1, sumMs strictly up). Allow only
+            //    that one-step (or unchanged) — blocks the one-shot "count: 500,
+            //    sumMs: 500" forge of an instant-responder veteran. A script can
+            //    still add fake samples one loud write at a time; the airtight fix
+            //    is to move this stamp server-side (like functions/index.js
+            //    already does for auto-granted posts) and then pin it like above.
+            && ( request.resource.data.get('lastActiveAt', null) == resource.data.get('lastActiveAt', null)
+                 || request.resource.data.get('lastActiveAt', null) == request.time )
+            && ( ( request.resource.data.get('responseCount', 0) == resource.data.get('responseCount', 0)
+                   && request.resource.data.get('responseSumMs', 0) == resource.data.get('responseSumMs', 0) )
+              || ( request.resource.data.get('responseCount', 0) == resource.data.get('responseCount', 0) + 1
+                   && request.resource.data.get('responseSumMs', 0) > resource.data.get('responseSumMs', 0) ) )
             && (request.resource.data.contentFlagged == resource.data.contentFlagged
                 || (request.resource.data.contentFlagged == true && resource.data.contentFlagged == false)));
+      allow delete: if false;
+    }
+
+    // ─── COMPANY CONTACTS (gated contact sidecar) ───
+    // email / phone / address / postalCode live HERE, never on the public
+    // companies doc above. That doc is `read: if true` so anonymous visitors
+    // can browse the directory — which also meant an unauthenticated Firestore
+    // REST read returned a clean, structured list of every company's email,
+    // phone and street address: a ready-made scraping target aimed at exactly
+    // the market this platform is built for. Rules can't hide individual
+    // fields, so the contact block had to become its own document.
+    //
+    // get vs list is deliberate, and is the whole point of splitting them:
+    //  • get  — any signed-in, email-verified user may look up ONE company's
+    //           contact block (the company detail screen's legitimate use).
+    //  • list — admins only. Without this split, a resource-independent
+    //           condition like email_verified would authorize a query over the
+    //           WHOLE collection, so anyone who signed up and clicked a
+    //           verification link could re-scrape the entire directory in a
+    //           single request — the same hole, just one signup further away.
+    // The owner always reaches their own block (they may not have verified yet,
+    // and still need to edit their own profile), and admins reach everything.
+    //
+    // vatNumber deliberately still lives on the public companies doc: it is
+    // load-bearing for the VIES verification + duplicate-VAT machinery
+    // (verifyMyCompany, enforceCompanyIntegrity, and the vatNumberNormalized
+    // equality query), and moving it is a separate change with real
+    // correctness stakes rather than a field relocation.
+    match /companyContacts/{companyId} {
+      allow get: if isSignedIn() && (
+           request.auth.uid == companyId
+        || request.auth.token.email_verified == true
+        || isAdmin()
+      );
+      allow list: if isSignedIn() && isAdmin();
+      // Only the owner writes their own block (admins additionally, so the
+      // one-off backfill that moves existing inline contact off the public doc
+      // can run client-side as an admin, same as migrateLegacyIdentityPosts).
+      // keys().hasOnly() keeps this document from quietly becoming a second,
+      // ungated home for anything else about a company.
+      allow create, update: if isSignedIn()
+        && (request.auth.uid == companyId || isAdmin())
+        && request.resource.data.keys()
+             .hasOnly(['email', 'phone', 'address', 'postalCode', 'updatedAt']);
       allow delete: if false;
     }
 
@@ -196,13 +423,26 @@ service cloud.firestore {
       // The owner-update branch pins posterSuspended (like contentFlagged)
       // admin-only — otherwise a suspended company could silently un-hide
       // its own existing posts by editing them, defeating the consequence.
+      // dealNumber is likewise pinned — H2 fix: it's now assigned ONLY by the
+      // assignDealNumber Cloud Function (Admin SDK, bypasses this rule) the
+      // moment status lands on 'closed', drawn from counters/deals, which is
+      // itself closed to every client write (see counters/{counterId} below).
+      // Without this pin an owner could self-write any dealNumber straight
+      // onto their own post, forging the "Deal #N" trust badge.
+      // Every OTHER identity/trust field the create rule cross-checks is
+      // re-checked on update by ownerPostSnapshotsHonest() (H1 fix) — see that
+      // helper at the top of this file for why each field is pinned the way it
+      // is. Without it, create's whole cross-check was one update() away from
+      // being irrelevant.
       allow update: if isAdmin()
         || (isSignedIn()
             && exists(/databases/$(database)/documents/capacityOwners/$(capacityId))
             && get(/databases/$(database)/documents/capacityOwners/$(capacityId)).data.posterCompanyId == request.auth.uid
             && (request.resource.data.contentFlagged == resource.data.contentFlagged
                 || (request.resource.data.contentFlagged == true && resource.data.contentFlagged == false))
-            && request.resource.data.get('posterSuspended', false) == resource.data.get('posterSuspended', false))
+            && request.resource.data.get('posterSuspended', false) == resource.data.get('posterSuspended', false)
+            && request.resource.data.get('dealNumber', null) == resource.data.get('dealNumber', null)
+            && ownerPostSnapshotsHonest())
         || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount'])
         || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['favoriteCount']))
         || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['interestCount']));
@@ -290,13 +530,20 @@ service cloud.firestore {
       // whether some OTHER company has shown interest in a post (that would
       // leak the private interest graph). uids/postIds contain no underscores,
       // so split('_')[0] cleanly yields the requester id.
+      // isAdmin() is deliberately LAST in the chain: the two branches above it are
+      // the ones real users hit (requester reading their own request, poster
+      // reading requests on their own post), and each costs zero or one document
+      // access, while isAdmin() always costs one. Ordering the cheap, common
+      // branches first keeps the ordinary path off the rules' document-access
+      // budget — and keeps a future regression in the isAdmin() helper from being
+      // able to block ordinary users again, the way it just did.
       allow read: if isSignedIn() && (
            ( resource == null && reqId.split('_')[0] == request.auth.uid )
         || ( resource != null && (
                 resource.data.requesterCompanyId == request.auth.uid
-             || isAdmin()
              || ( exists(/databases/$(database)/documents/capacityOwners/$(resource.data.postId))
-               && get(/databases/$(database)/documents/capacityOwners/$(resource.data.postId)).data.posterCompanyId == request.auth.uid ) ) )
+               && get(/databases/$(database)/documents/capacityOwners/$(resource.data.postId)).data.posterCompanyId == request.auth.uid )
+             || isAdmin() ) )
       );
       // FREE, message-first (launch phase): anyone signed in with a verified
       // email may send a first message, always created as 'pending' (no
@@ -322,12 +569,22 @@ service cloud.firestore {
         && !request.resource.data.message.matches('.*[\\w.+-]+@[\\w-]+\\.[a-zA-Z]{2,}.*')
         && !request.resource.data.message.matches('.*[0-9]{7,}.*')
         && (
-             request.resource.data.status == 'pending'
+             ( request.resource.data.status == 'pending'
+               // exists() here is a tightening, not just a lookup: an orphan
+               // anonymous post with no capacityOwners sidecar was already
+               // documented as "contactless and harmless" by design (see that
+               // collection's rule above) — this just makes contact_requests
+               // actually honor that instead of silently accepting a request
+               // for a postId nothing can ever resolve the poster from.
+               && exists(/databases/$(database)/documents/capacityOwners/$(request.resource.data.postId))
+               && !isBlockedEitherWay(request.auth.uid,
+                    get(/databases/$(database)/documents/capacityOwners/$(request.resource.data.postId)).data.posterCompanyId) )
           || ( request.resource.data.status == 'granted'
                && exists(/databases/$(database)/documents/capacities/$(request.resource.data.postId))
                && get(/databases/$(database)/documents/capacities/$(request.resource.data.postId)).data.visibilityMode in ['visible', 'discreet']
                && request.resource.data.posterCompanyId ==
-                    get(/databases/$(database)/documents/capacities/$(request.resource.data.postId)).data.posterCompanyId )
+                    get(/databases/$(database)/documents/capacities/$(request.resource.data.postId)).data.posterCompanyId
+               && !isBlockedEitherWay(request.auth.uid, request.resource.data.posterCompanyId) )
            );
       allow update: if isAdmin()
         // Requester: record the follow-up outcome on their own request.
@@ -459,6 +716,25 @@ service cloud.firestore {
     // permission-denied before this fix. "Doesn't exist" leaks nothing, so
     // this is safe — reads of another user's *existing* favorite doc are
     // still denied by the userId check below.
+    // ─── USER BLOCKS ───
+    // One-directional block record, deterministic id {blockerCompanyId}_
+    // {blockedCompanyId} — mirrors the contact_requests id shape. Only the
+    // blocker may create/delete their own block; both companyRatings-style
+    // "resource == null" reads are allowed so a client can cheaply check
+    // "have I blocked this company?" for an id that doesn't exist yet
+    // (isBlockedEitherWay above uses exists(), not a client read, so this
+    // read rule is purely for the block/unblock UI's own toggle state).
+    match /userBlocks/{blockId} {
+      allow read: if isSignedIn() &&
+        (resource == null || resource.data.blockerCompanyId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn()
+        && blockId == request.auth.uid + '_' + request.resource.data.blockedCompanyId
+        && request.resource.data.blockerCompanyId == request.auth.uid;
+      allow delete: if isSignedIn() &&
+        (resource.data.blockerCompanyId == request.auth.uid || isAdmin());
+      allow update: if false;
+    }
+
     match /userFavorites/{favId} {
       allow read: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid);
       allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
@@ -517,14 +793,18 @@ service cloud.firestore {
     }
 
     // ─── DEAL COUNTER ───
-    // Single shared doc handing out sequential deal numbers — only ever
-    // touched from inside CapacityService.updateStatus()'s transaction.
-    // Restricted to monotonic +1 steps (rather than any signed-in write)
-    // so the sequence can't be reset or corrupted by an arbitrary write.
+    // Single shared doc handing out sequential deal numbers. H2 fix: this used
+    // to allow any signed-in client to write value == resource.value + 1,
+    // which is a monotonic step but NOT tied to any real deal closing — a
+    // script could loop that write to corrupt/inflate the sequence and
+    // contend with every real closure on this one hotspot doc. Now written
+    // ONLY by the assignDealNumber Cloud Function (Admin SDK, bypasses these
+    // rules) inside its own transaction the moment a capacity's status lands
+    // on 'closed' — closed to every client write, create included.
     match /counters/{counterId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && request.resource.data.value == 1;
-      allow update: if isSignedIn() && request.resource.data.value == resource.data.value + 1;
+      allow create: if false;
+      allow update: if false;
       allow delete: if false;
     }
 

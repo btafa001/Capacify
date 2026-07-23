@@ -157,6 +157,54 @@ class CapacityService {
     return {'migrated': migrated, 'skipped': skipped, 'failed': failed};
   }
 
+  /// ONE-OFF admin backfill that re-bands the trust signals already sitting on
+  /// existing public posts. New and re-synced posts are banded on write (see
+  /// CapacityModel.bandRatingSum), but every post created before that landed
+  /// still carries the EXACT rating sum/count and response hours — which is
+  /// precisely the tuple an anonymous post could be joined on against the
+  /// public companies directory. Until this runs, those old posts stay
+  /// de-anonymizable.
+  ///
+  /// Banding is idempotent (a band of a band is the same band), so this is safe
+  /// to re-run and only writes docs whose values actually change.
+  ///
+  /// Must be run while signed in as an admin — the capacities-update rule
+  /// permits admins, so no backend is needed.
+  Future<Map<String, int>> rebandPublicPostSignals() async {
+    final snap = await _firestore.collection('capacities').get();
+    int migrated = 0, skipped = 0, failed = 0;
+
+    for (final doc in snap.docs) {
+      try {
+        final data = doc.data();
+        final sum = (data['posterRatingSum'] as num?)?.toInt() ?? 0;
+        final count = (data['posterRatingCount'] as num?)?.toInt() ?? 0;
+        final hours = (data['posterAvgResponseHours'] as num?)?.toInt();
+
+        final bandedSum = CapacityModel.bandRatingSum(sum, count);
+        final bandedCount = CapacityModel.bandRatingCount(count);
+        final bandedHours = CapacityModel.bandResponseHours(hours);
+
+        if (bandedSum == sum &&
+            bandedCount == count &&
+            bandedHours == hours) {
+          skipped++;
+          continue;
+        }
+
+        await doc.reference.update({
+          'posterRatingSum': bandedSum,
+          'posterRatingCount': bandedCount,
+          if (bandedHours != null) 'posterAvgResponseHours': bandedHours,
+        });
+        migrated++;
+      } catch (_) {
+        failed++;
+      }
+    }
+    return {'migrated': migrated, 'skipped': skipped, 'failed': failed};
+  }
+
   /// Reads the locked identity sidecar. Firestore rules return it only to the
   /// owner, an admin, or a requester with a granted contact request — so a
   /// permission-denied here means "not granted" and surfaces as null.
@@ -210,49 +258,25 @@ class CapacityService {
   // ─── LIFECYCLE — never hard delete ───
 
   /// Update status with timestamps for closed/cancelled. Closing a deal
-  /// for the first time also assigns it a sequential dealNumber, drawn
-  /// atomically from counters/deals so concurrent closures can't collide.
-  /// If a deal is later reopened and re-closed, it keeps its original
-  /// number rather than being issued a new one.
+  /// no longer assigns dealNumber here — that's drawn server-side by the
+  /// assignDealNumber Cloud Function trigger the moment status lands on
+  /// 'closed' (Admin SDK transaction against counters/deals), since a
+  /// client-writable counter let any signed-in account bump/corrupt the
+  /// shared sequence directly (see firestore.rules H2 fix). The trigger
+  /// keeps a deal's original number if it's later reopened and re-closed.
   Future<void> updateStatus(
     String capacityId,
     CapacityStatus newStatus,
   ) async {
-    if (newStatus != CapacityStatus.closed) {
-      final Map<String, dynamic> updates = {
-        'status': CapacityModel.statusToString(newStatus),
-      };
-      if (newStatus == CapacityStatus.cancelled) {
-        updates['cancelledAt'] = FieldValue.serverTimestamp();
-      }
-      await _firestore
-          .collection('capacities')
-          .doc(capacityId)
-          .update(updates);
-      return;
+    final Map<String, dynamic> updates = {
+      'status': CapacityModel.statusToString(newStatus),
+    };
+    if (newStatus == CapacityStatus.cancelled) {
+      updates['cancelledAt'] = FieldValue.serverTimestamp();
+    } else if (newStatus == CapacityStatus.closed) {
+      updates['closedAt'] = FieldValue.serverTimestamp();
     }
-
-    final capacityRef = _firestore.collection('capacities').doc(capacityId);
-    final counterRef = _firestore.collection('counters').doc('deals');
-
-    await _firestore.runTransaction((tx) async {
-      final capacitySnap = await tx.get(capacityRef);
-      final existingNumber = capacitySnap.data()?['dealNumber'] as int?;
-
-      final updates = <String, dynamic>{
-        'status': CapacityModel.statusToString(CapacityStatus.closed),
-        'closedAt': FieldValue.serverTimestamp(),
-      };
-
-      if (existingNumber == null) {
-        final counterSnap = await tx.get(counterRef);
-        final nextNumber = ((counterSnap.data()?['value'] ?? 0) as int) + 1;
-        tx.set(counterRef, {'value': nextNumber});
-        updates['dealNumber'] = nextNumber;
-      }
-
-      tx.update(capacityRef, updates);
-    });
+    await _firestore.collection('capacities').doc(capacityId).update(updates);
   }
 
   // ─── ENGAGEMENT ───
@@ -536,13 +560,17 @@ class CapacityService {
           'contactPhone': newPhone,
           'contactEmail': newEmail,
         });
-        // Non-identifying trust signals on the paired public post.
+        // Trust signals on the paired public post — banded, never exact, or
+        // this sync would re-plant the de-anonymizing join key on every one of
+        // the company's posts each time they saved their profile (see
+        // CapacityModel.bandRatingSum).
         batch.update(
           _firestore.collection('capacities').doc(doc.id),
           {
             'posterVerified': verified,
-            'posterRatingSum': ratingSum,
-            'posterRatingCount': ratingCount,
+            'posterRatingSum':
+                CapacityModel.bandRatingSum(ratingSum, ratingCount),
+            'posterRatingCount': CapacityModel.bandRatingCount(ratingCount),
           },
         );
       }

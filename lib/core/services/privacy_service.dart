@@ -109,19 +109,40 @@ class PrivacyService {
     }
 
     // 2) Anonymise the company profile (soft — can't hard-delete by rules).
+    // The contact fields cleared here are the legacy inline copies on the
+    // public doc; the live ones now live in the gated companyContacts sidecar
+    // and are cleared separately below. Both are scrubbed, or a deleted
+    // account would leave its real email/phone/address behind in whichever
+    // location this pass missed.
     final companyRef = _db.collection('companies').doc(uid);
     if ((await companyRef.get()).exists) {
       await companyRef.update({
         'name': 'Gelöschtes Unternehmen',
-        'phone': '',
-        'email': '',
-        'address': '',
-        'postalCode': '',
+        'phone': FieldValue.delete(),
+        'email': FieldValue.delete(),
+        'address': FieldValue.delete(),
+        'postalCode': FieldValue.delete(),
+        'profileComplete': false,
         'website': '',
         'description': '',
         'vatNumber': '',
         'trades': <String>[],
         'deleted': true,
+      });
+    }
+
+    // 2b) Clear the gated contact sidecar — the authoritative home for
+    // email/phone/address since the contact split. Emptied rather than
+    // deleted, matching the soft-delete posture of the profile above (the
+    // rules permit the owner to write their own block, not remove it).
+    final contactRef = _db.collection('companyContacts').doc(uid);
+    if ((await contactRef.get()).exists) {
+      await contactRef.set({
+        'email': '',
+        'phone': '',
+        'address': '',
+        'postalCode': '',
+        'updatedAt': FieldValue.serverTimestamp(),
       });
     }
 

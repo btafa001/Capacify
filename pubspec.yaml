@@ -11,6 +11,10 @@ dependencies:
     sdk: flutter
   flutter_localizations:
     sdk: flutter
+  # Path-based URLs instead of Flutter web's default `/#/…` hash strategy —
+  # imported only on web, via the conditional import in main.dart.
+  flutter_web_plugins:
+    sdk: flutter
   url_launcher: ^6.3.0
   web: ^1.1.0
 
@@ -27,7 +31,10 @@ dependencies:
   go_router: ^14.6.2
 
   # UI Utilities
-  google_fonts: ^6.2.1
+  # NOTE: no google_fonts. Inter/Archivo are bundled as asset fonts below —
+  # the package fetched them from fonts.gstatic.com at runtime, which both
+  # blocked first paint and transferred the visitor's IP to Google before the
+  # consent banner was answered (the LG München I Google-Fonts ruling).
   font_awesome_flutter: ^11.0.0
   firebase_app_check: ^0.4.5
   cloud_functions: ^6.3.3
@@ -42,3 +49,29 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  # Self-hosted fonts (SIL Open Font License 1.1 — see assets/fonts/OFL-*.txt).
+  # latin + latin-ext static instances: latin alone covers äöüß but not the
+  # Polish/Czech/Turkish/Romanian letters that show up constantly in German
+  # construction company and contact names (Ł, ș, č, ő …), which would render
+  # as tofu. Every weight the app actually uses is here, so nothing is ever
+  # synthesized or snapped to a neighbouring weight.
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Inter-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Inter-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Inter-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/Inter-ExtraBold.ttf
+          weight: 800
+        - asset: assets/fonts/Inter-Black.ttf
+          weight: 900
+    - family: Archivo
+      fonts:
+        - asset: assets/fonts/Archivo-Black.ttf
+          weight: 900

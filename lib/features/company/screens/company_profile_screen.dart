@@ -436,6 +436,13 @@ class _CompanyProfileScreenState
         logoUrl: _existingCompany?.logoUrl ?? '',
         vatNumber: vatNumber,
         verificationStatus: verificationStatus,
+        // Only meaningful for the create branch below (toFirestoreForUpdate
+        // excludes emailVerified — see firestore.rules' pin on it). Reads the
+        // CALLER's own live Auth state, which is exactly what the create rule
+        // re-checks against request.auth.token.email_verified — true already
+        // for Google/Apple, false for a still-unverified email/password
+        // account (see H3 fix notes on CompanyModel.isDirectoryEligible).
+        emailVerified: user.emailVerified,
         // Once flagged, stays flagged through owner edits until an admin
         // clears it — matches the Firestore rule, which only allows
         // contentFlagged to move false→true (never true→false) on a
@@ -559,6 +566,7 @@ class _CompanyProfileScreenState
           backgroundColor: c.surface,
           leading: IconButton(
             icon: Icon(Icons.arrow_back, color: c.textPrimary),
+            tooltip: MaterialLocalizations.of(context).backButtonTooltip,
             onPressed: () => Navigator.pop(context),
           ),
         ),
@@ -578,6 +586,7 @@ class _CompanyProfileScreenState
         backgroundColor: c.surface,
         leading: IconButton(
           icon: Icon(Icons.arrow_back, color: c.textPrimary),
+          tooltip: MaterialLocalizations.of(context).backButtonTooltip,
           onPressed: () => Navigator.pop(context),
         ),
         title: Text(
@@ -599,6 +608,11 @@ class _CompanyProfileScreenState
       ),
       body: SingleChildScrollView(
         controller: _scrollController,
+        // Clamping physics — see the matching comment in
+        // live_capacity_feed_screen.dart: bouncing overscroll desyncs the
+        // HTML <img> CompanyLogoAvatar from the canvas-rendered card during
+        // the rubber-band animation.
+        physics: const ClampingScrollPhysics(),
         padding: EdgeInsets.all(isMobile ? 20 : 32),
         child: Center(
           child: ConstrainedBox(
@@ -638,43 +652,47 @@ class _CompanyProfileScreenState
                   Center(
                     child: Column(
                       children: [
-                        GestureDetector(
-                          onTap: _uploadingLogo ? null : _onLogoTap,
-                          child: Stack(
-                            clipBehavior: Clip.none,
-                            children: [
-                              CompanyLogoAvatar(
-                                logoUrl: _existingCompany!.logoUrl,
-                                companyName: _existingCompany!.name,
-                                radius: 52,
-                              ),
-                              if (_uploadingLogo)
-                                const Positioned.fill(
-                                  child: DecoratedBox(
-                                    decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.black38),
-                                    child: Center(
-                                      child: SizedBox(
-                                        width: 24,
-                                        height: 24,
-                                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        Semantics(
+                          button: true,
+                          label: l.changeLogoTooltip,
+                          child: GestureDetector(
+                            onTap: _uploadingLogo ? null : _onLogoTap,
+                            child: Stack(
+                              clipBehavior: Clip.none,
+                              children: [
+                                CompanyLogoAvatar(
+                                  logoUrl: _existingCompany!.logoUrl,
+                                  companyName: _existingCompany!.name,
+                                  radius: 52,
+                                ),
+                                if (_uploadingLogo)
+                                  const Positioned.fill(
+                                    child: DecoratedBox(
+                                      decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.black38),
+                                      child: Center(
+                                        child: SizedBox(
+                                          width: 24,
+                                          height: 24,
+                                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                        ),
                                       ),
                                     ),
                                   ),
-                                ),
-                              Positioned(
-                                bottom: 0,
-                                right: 0,
-                                child: Container(
-                                  padding: const EdgeInsets.all(6),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.primary,
-                                    shape: BoxShape.circle,
-                                    border: Border.all(color: c.background, width: 2),
+                                Positioned(
+                                  bottom: 0,
+                                  right: 0,
+                                  child: Container(
+                                    padding: const EdgeInsets.all(6),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.primary,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(color: c.background, width: 2),
+                                    ),
+                                    child: const Icon(Icons.camera_alt_outlined, size: 14, color: Colors.white),
                                   ),
-                                  child: const Icon(Icons.camera_alt_outlined, size: 14, color: Colors.white),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                         ),
                         const SizedBox(height: 8),
@@ -1013,7 +1031,7 @@ class _CompanyProfileScreenState
                   fieldKey: _vatNumberFieldKey,
                   label: l.vatLabel, hint: l.vatHint,
                   controller: _vatNumberController,
-                  validator: (v) => Validators.vatNumberDE(v, l),
+                  validator: (v) => Validators.vatNumberEU(v, l),
                 ),
                 SizedBox(height: isMobile ? 8 : 12),
 

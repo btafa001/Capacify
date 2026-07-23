@@ -13,12 +13,21 @@ class ThemeSwitcher extends ConsumerWidget {
     final isDark = mode == ThemeMode.dark;
     final c = AppColors.of(context);
 
+    // InkWell, not GestureDetector: this sits in the landing header, where a
+    // keyboard user has to be able to reach it. The tooltip message doubles as
+    // the semantic label — the icon-only variant has no text of its own for a
+    // screen reader to announce.
     return Tooltip(
       message: isDark ? 'Light mode' : 'Dark mode',
-      child: GestureDetector(
-        onTap: () => ref.read(themeModeProvider.notifier).setThemeMode(
-            isDark ? ThemeMode.light : ThemeMode.dark),
-        child: AnimatedContainer(
+      child: Semantics(
+        container: true,
+        button: true,
+        label: isDark ? 'Light mode' : 'Dark mode',
+        child: InkWell(
+          onTap: () => ref.read(themeModeProvider.notifier).setThemeMode(
+              isDark ? ThemeMode.light : ThemeMode.dark),
+          borderRadius: BorderRadius.circular(20),
+          child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
           padding: iconOnly
               ? const EdgeInsets.all(7)
@@ -28,7 +37,13 @@ class ThemeSwitcher extends ConsumerWidget {
             borderRadius: BorderRadius.circular(20),
             border: Border.all(color: c.border),
           ),
-          child: iconOnly
+          // The visible "Dark"/"Light" text names the CURRENT mode while the
+          // label names what tapping switches to — announcing both would read
+          // as "Dark mode, button, Light". Excluded here rather than via
+          // Semantics.excludeSemantics, which would take the InkWell's tap
+          // action with it.
+          child: ExcludeSemantics(
+            child: iconOnly
               ? Icon(
                   isDark ? Icons.dark_mode_outlined : Icons.light_mode_outlined,
                   size: 16,
@@ -53,6 +68,8 @@ class ThemeSwitcher extends ConsumerWidget {
                     ),
                   ],
                 ),
+          ),
+          ),
         ),
       ),
     );

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:go_router/go_router.dart';
+import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/utils/validators.dart';
@@ -9,10 +11,8 @@ import '../../../core/services/auth_provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../shared/widgets/custom_text_field.dart';
 import '../../../shared/widgets/capacify_logo.dart';
-import 'register_screen.dart';
 import 'forgot_password_screen.dart';
-import '../../landing/screens/landing_screen.dart';
-import '../../dashboard/screens/dashboard_screen.dart';
+import '../../onboarding/company_gate.dart';
 import '../../../core/services/analytics_service.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -65,7 +65,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       if (mounted) {
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+          MaterialPageRoute(builder: (_) => const CompanyGate()),
           (route) => false,
         );
       }
@@ -93,7 +93,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       if (mounted) {
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+          MaterialPageRoute(builder: (_) => const CompanyGate()),
           (route) => false,
         );
       }
@@ -104,10 +104,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     }
   }
 
-  void _toLanding() => Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => const LandingScreen()),
-      );
+  // go, not push: the wordmark means "take me home", and stacking the landing
+  // page on top of the login page it was opened from is not that.
+  void _toLanding() => context.go(Routes.landing);
 
   Future<void> _signInWithApple() async {
     setState(() { _isLoading = true; _errorMessage = null; });
@@ -126,7 +125,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       if (mounted) {
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+          MaterialPageRoute(builder: (_) => const CompanyGate()),
           (route) => false,
         );
       }
@@ -303,7 +302,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             children: [
                               Text(l.noAccount, style: TextStyle(color: c.textSecondary, fontSize: 15)),
                               TextButton(
-                                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterScreen())),
+                                onPressed: () => context.push(Routes.register),
                                 child: Text(l.registerLink),
                               ),
                             ],

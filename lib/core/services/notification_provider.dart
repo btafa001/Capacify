@@ -30,3 +30,16 @@ final unreadAdminNotificationsProvider =
   final all = ref.watch(myNotificationsProvider(uid)).valueOrNull ?? [];
   return all.where((n) => n.isAdminEvent && !n.read).toList();
 });
+
+/// Personal event notifications addressed to this user — request accepted,
+/// verification result, rating approved, and the pending/collaboration nudges.
+/// Rendered in the bell's "Aktivität" section for the recipient. Unlike admin
+/// events these are NEVER gated on isAdmin: a regular company only ever receives
+/// its own personal docs (recipientId == uid), so the stream is already scoped.
+/// new_message / new_contact_request are excluded — they surface via the chat
+/// unread map and the Received-Requests badge instead.
+final unreadPersonalNotificationsProvider =
+    Provider.family<List<NotificationModel>, String>((ref, uid) {
+  final all = ref.watch(myNotificationsProvider(uid)).valueOrNull ?? [];
+  return all.where((n) => n.isPersonalEvent && !n.read).toList();
+});

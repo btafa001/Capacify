@@ -25,6 +25,7 @@ class PricingScreen extends StatelessWidget {
         elevation: 0,
         leading: IconButton(
             icon: Icon(Icons.arrow_back, color: c.textPrimary),
+            tooltip: MaterialLocalizations.of(context).backButtonTooltip,
             onPressed: () => Navigator.pop(context)),
         title: Text(l.pricingTitle,
             style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.w900, fontSize: 18)),

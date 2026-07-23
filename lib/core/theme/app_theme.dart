@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 // ─── Brand / status colors — never change between themes ──────────────────────
 class AppColors {
@@ -49,8 +48,12 @@ class _AppColorScheme {
   Color get surfaceVariant => _dark ? const Color(0xFF1A1F3A) : const Color(0xFFEEF0F8);
   Color get textPrimary    => _dark ? const Color(0xFFFFFFFF) : const Color(0xFF1A1A2E);
   Color get textSecondary  => _dark ? const Color(0xFFA0A0A0) : const Color(0xFF555570);
-  Color get textTertiary   => _dark ? const Color(0xFF606060)  : const Color(0xFF888899);
-  Color get textHint       => _dark ? const Color(0xFF9E9E9E)  : const Color(0xFFAAAAAA);
+  // Light-mode values were #888899 (~3.5:1 on white) and #AAAAAA (~2.3:1) —
+  // both fail WCAG AA's 4.5:1 for normal text. Darkened to ~5.0:1 / ~4.8:1
+  // respectively, keeping textHint the lighter of the two (visual hierarchy
+  // vs textTertiary) while both now clear AA on white and on surfaceVariant.
+  Color get textTertiary   => _dark ? const Color(0xFF606060)  : const Color(0xFF6E6E82);
+  Color get textHint       => _dark ? const Color(0xFF9E9E9E)  : const Color(0xFF707084);
   Color get border         => _dark ? const Color(0xFF2A2A2A)  : const Color(0xFFE0E0E8);
 }
 
@@ -75,6 +78,13 @@ class AppTheme {
       useMaterial3: true,
       brightness: brightness,
       scaffoldBackgroundColor: bg,
+      // Inter for everything, from the bundled assets (see pubspec.yaml).
+      // Set here rather than per-style: ThemeData applies `fontFamily` to the
+      // whole DEFAULT text theme and only then merges `textTheme` on top, so
+      // the nine styles overridden below AND the six that aren't all come out
+      // Inter. Overriding only the listed ones (the old
+      // GoogleFonts.interTextTheme call) would have left the rest on Roboto.
+      fontFamily: 'Inter',
       colorScheme: ColorScheme(
         brightness: brightness,
         primary: AppColors.primary,
@@ -87,7 +97,7 @@ class AppTheme {
         onSurface: onSurface,
       ),
 
-      textTheme: GoogleFonts.interTextTheme(TextTheme(
+      textTheme: TextTheme(
         displayLarge:  TextStyle(fontSize: 38, fontWeight: FontWeight.w900, color: onSurface, letterSpacing: -0.8),
         displayMedium: TextStyle(fontSize: 30, fontWeight: FontWeight.w900, color: onSurface, letterSpacing: -0.5),
         titleLarge:    TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: onSurface, letterSpacing: -0.3),
@@ -97,12 +107,12 @@ class AppTheme {
         bodySmall:     TextStyle(fontSize: 13, color: secondary),
         labelLarge:    TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: onSurface, letterSpacing: 0.3),
         labelMedium:   TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: secondary),
-      )),
+      ),
 
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: surface,
-        hintStyle: TextStyle(color: isDark ? const Color(0xFF606060) : const Color(0xFF888899), fontSize: 15),
+        hintStyle: TextStyle(color: isDark ? const Color(0xFF606060) : const Color(0xFF6E6E82), fontSize: 15),
         labelStyle: TextStyle(color: secondary, fontSize: 15),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(8),

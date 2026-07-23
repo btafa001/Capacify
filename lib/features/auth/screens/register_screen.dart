@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:go_router/go_router.dart';
+import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/services/auth_provider.dart';
@@ -11,12 +13,8 @@ import '../../../core/utils/validators.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../shared/widgets/custom_text_field.dart';
 import '../../../shared/widgets/capacify_logo.dart';
-import '../../legal/screens/agb_screen.dart';
-import '../../legal/screens/datenschutz_screen.dart';
 import '../../../core/services/analytics_service.dart';
-import '../../landing/screens/landing_screen.dart';
-import '../../dashboard/screens/dashboard_screen.dart';
-import 'login_screen.dart';
+import '../../onboarding/company_gate.dart';
 
 class RegisterScreen extends ConsumerStatefulWidget {
   const RegisterScreen({super.key});
@@ -120,15 +118,11 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     }
   }
 
-  void _toLanding() => Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => const LandingScreen()),
-      );
+  // go, not push: the wordmark means "take me home", and stacking the landing
+  // page on top of the register page it was opened from is not that.
+  void _toLanding() => context.go(Routes.landing);
 
-  void _toLogin() => Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => const LoginScreen()),
-      );
+  void _toLogin() => context.push(Routes.login);
 
   Future<void> _register(AppLocalizations l) async {
     if (!_formKey.currentState!.validate()) return;
@@ -162,7 +156,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       if (mounted) {
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+          MaterialPageRoute(builder: (_) => const CompanyGate()),
           (route) => false,
         );
       }
@@ -189,7 +183,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       if (mounted) {
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+          MaterialPageRoute(builder: (_) => const CompanyGate()),
           (route) => false,
         );
       }
@@ -216,7 +210,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       if (mounted) {
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+          MaterialPageRoute(builder: (_) => const CompanyGate()),
           (route) => false,
         );
       }
@@ -437,12 +431,12 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                                     children: [
                                       Text(l.consentPrefix, style: TextStyle(fontSize: 13, color: c.textSecondary, height: 1.5)),
                                       GestureDetector(
-                                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AGBScreen())),
+                                        onTap: () => context.push(Routes.agb),
                                         child: const Text('AGB', style: TextStyle(fontSize: 13, color: AppColors.primary, fontWeight: FontWeight.w700, height: 1.5, decoration: TextDecoration.underline, decorationColor: AppColors.primary)),
                                       ),
                                       Text(l.consentMiddle, style: TextStyle(fontSize: 13, color: c.textSecondary, height: 1.5)),
                                       GestureDetector(
-                                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DatenschutzScreen())),
+                                        onTap: () => context.push(Routes.privacy),
                                         child: const Text('Datenschutzerklärung', style: TextStyle(fontSize: 13, color: AppColors.primary, fontWeight: FontWeight.w700, height: 1.5, decoration: TextDecoration.underline, decorationColor: AppColors.primary)),
                                       ),
                                       Text(l.consentSuffix, style: TextStyle(fontSize: 13, color: c.textSecondary, height: 1.5)),

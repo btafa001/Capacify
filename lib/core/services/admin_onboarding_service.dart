@@ -73,10 +73,20 @@ class AdminOnboardingService {
         onboardingSource: 'admin',
         onboardingAdminUid: adminUid,
       );
-      await session.firestore
-          .collection('companies')
-          .doc(uid)
-          .set(company.toFirestore());
+      // Public profile + gated contact sidecar, both through the secondary
+      // session so the NEW company owns them (satisfies the owner branch of
+      // the companyContacts write rule). Contact must never land on the
+      // world-readable company doc — see CompanyModel's class doc.
+      final companyBatch = session.firestore.batch();
+      companyBatch.set(
+        session.firestore.collection('companies').doc(uid),
+        company.toFirestore(),
+      );
+      companyBatch.set(
+        session.firestore.collection('companyContacts').doc(uid),
+        company.toContactFirestore(),
+      );
+      await companyBatch.commit();
 
       return (uid: uid, password: password);
     } finally {
@@ -125,10 +135,21 @@ class AdminOnboardingService {
     String companyId,
     CompanyModel company,
   ) async {
-    await _adminFirestore
-        .collection('companies')
-        .doc(companyId)
-        .update(company.toFirestoreForUpdate());
+    // Mirrors CompanyService.updateCompany: the public doc plus the gated
+    // contact sidecar, set(merge:true) since a company onboarded before the
+    // contact split has no sidecar document yet. Runs as the admin, which the
+    // companyContacts write rule permits alongside the owner.
+    final batch = _adminFirestore.batch();
+    batch.update(
+      _adminFirestore.collection('companies').doc(companyId),
+      company.toFirestoreForUpdate(),
+    );
+    batch.set(
+      _adminFirestore.collection('companyContacts').doc(companyId),
+      company.toContactFirestore(),
+      SetOptions(merge: true),
+    );
+    await batch.commit();
   }
 
   /// Stamps invitedAt the moment the admin sends the set-password invite.

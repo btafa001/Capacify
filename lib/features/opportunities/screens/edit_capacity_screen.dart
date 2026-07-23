@@ -161,6 +161,7 @@ class _EditCapacityScreenState
         leading: IconButton(
           icon: Icon(Icons.arrow_back,
               color: c.textPrimary),
+          tooltip: MaterialLocalizations.of(context).backButtonTooltip,
           onPressed: () => Navigator.pop(context),
         ),
         title: Text(

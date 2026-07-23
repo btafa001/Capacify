@@ -44,11 +44,17 @@ class ReportService {
     await batch.commit();
   }
 
-  Stream<List<Map<String, dynamic>>> getAllReports() {
+  Stream<List<ReportModel>> getAllReports() {
     return _db
         .collection('reports')
         .orderBy('createdAt', descending: true)
         .snapshots()
-        .map((s) => s.docs.map((d) => {'id': d.id, ...d.data()}).toList());
+        .map((s) => s.docs.map(ReportModel.fromFirestore).toList());
+  }
+
+  /// Admin-only (see firestore.rules) transition out of 'pending' — 'resolved'
+  /// once the report's been acted on, 'dismissed' if it wasn't actionable.
+  Future<void> setReportStatus(String reportId, String status) {
+    return _db.collection('reports').doc(reportId).update({'status': status});
   }
 }
