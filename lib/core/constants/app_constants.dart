@@ -67,6 +67,11 @@ const bool kAppleSignInEnabled = false;
 // Bump this (YYYY-MM) whenever either document changes materially.
 const String kLegalTermsVersion = '2026-07';
 
+// App version stamped onto client crash reports (see ErrorService / the
+// clientErrors collection) so a report can be tied to a release. Keep in sync
+// with `version:` in pubspec.yaml — there's no build-time injection wired up.
+const String kAppVersion = '1.0.0+1';
+
 const List<String> kTrades = [
   'Rohbau',
   'Trockenbau',

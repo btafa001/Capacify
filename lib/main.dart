@@ -13,6 +13,7 @@ import 'core/router/url_strategy_stub.dart'
 import 'core/theme/app_theme.dart';
 import 'shared/widgets/consent_banner.dart';
 import 'core/services/theme_provider.dart';
+import 'core/services/error_service.dart';
 import 'core/localization/app_localizations.dart';
 import 'core/localization/locale_provider.dart';
 
@@ -35,6 +36,13 @@ Future<void> _activateAppCheck() async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Install global uncaught-error hooks before anything else can throw, so a
+  // production failure on a user's machine lands in the clientErrors sink
+  // instead of vanishing silently (M6). The Firestore write no-ops until
+  // Firebase is initialized below — acceptable; boot-time errors are rare and
+  // the alternative (initializing Firebase first) leaves an even earlier gap.
+  ErrorService.init();
 
   // Build the semantics tree unconditionally, for the whole life of the app.
   //

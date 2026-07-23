@@ -365,12 +365,23 @@ class CapacityService {
   /// Bounded to the newest [limit] docs: an unbounded realtime stream of the
   /// whole collection would bill a read per doc per visitor and grow client
   /// memory without limit as supply scales — a launch-time footgun. Expired
-  /// posts (availability window already ended) are filtered out so a stale
-  /// "team available last week" doesn't make a live market look dead.
+  /// posts (availability window already ended), flagged/suspended posts, and
+  /// the trade/type facets are all filtered CLIENT-side below.
+  ///
+  /// Because that filtering happens after the server-side [limit], the window
+  /// can under-fill: if the newest [limit] docs contain expired/flagged posts
+  /// (or the caller picked a trade facet), the user sees fewer than [limit]
+  /// with nothing behind them — there's no pagination yet. The airtight fix is
+  /// a server-side `availableTo >= today` filter, but Firestore requires the
+  /// range field to lead the orderBy, which would reorder the feed away from
+  /// newest-first and needs a new composite index — deferred to the pagination
+  /// work (see the scaling ticket, ex-M7). Until then we simply take a wider
+  /// window (150, not 60) so realistic expiry/flag churn can't starve the feed
+  /// at launch volume; 150 realtime reads/visitor is still cheap here.
   Stream<List<CapacityModel>> getCapacities({
     String? trade,
     CapacityType? type,
-    int limit = 60,
+    int limit = 150,
   }) {
     final now = DateTime.now();
     final startOfToday = DateTime(now.year, now.month, now.day);

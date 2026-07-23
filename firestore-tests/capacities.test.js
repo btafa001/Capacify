@@ -379,6 +379,69 @@ describe('capacityOwners: the identity sidecar stays locked', () => {
   });
 });
 
+describe('capacities: engagement counters can only step by their honest delta (M1)', () => {
+  // The +1 view bump succeeding is already covered by "anyone can bump
+  // viewCount" above; these lock the forge the delta-pin closes.
+  test('viewCount cannot be pinned to an arbitrary value', async () => {
+    await seed();
+    const anon = testEnv.unauthenticatedContext().firestore();
+    await assertFails(
+      updateDoc(doc(anon, 'capacities', POST), { viewCount: 9999 })
+    );
+  });
+
+  test('viewCount cannot jump by more than one', async () => {
+    await seed();
+    const anon = testEnv.unauthenticatedContext().firestore();
+    await assertFails(
+      updateDoc(doc(anon, 'capacities', POST), { viewCount: 2 })
+    );
+  });
+
+  test('favoriteCount may step +1 (favourite)', async () => {
+    await seed({}, { favoriteCount: 3 });
+    await assertSucceeds(
+      updateDoc(doc(other(), 'capacities', POST), { favoriteCount: 4 })
+    );
+  });
+
+  test('favoriteCount may step -1 (un-favourite)', async () => {
+    await seed({}, { favoriteCount: 3 });
+    await assertSucceeds(
+      updateDoc(doc(other(), 'capacities', POST), { favoriteCount: 2 })
+    );
+  });
+
+  test('favoriteCount cannot be inflated as social proof', async () => {
+    await seed();
+    await assertFails(
+      updateDoc(doc(other(), 'capacities', POST), { favoriteCount: 500 })
+    );
+  });
+
+  test('a signed-out caller cannot touch favoriteCount at all', async () => {
+    await seed();
+    const anon = testEnv.unauthenticatedContext().firestore();
+    await assertFails(
+      updateDoc(doc(anon, 'capacities', POST), { favoriteCount: 1 })
+    );
+  });
+
+  test('interestCount may step +1 for a signed-in user', async () => {
+    await seed();
+    await assertSucceeds(
+      updateDoc(doc(other(), 'capacities', POST), { interestCount: 1 })
+    );
+  });
+
+  test('interestCount cannot be forged to a large value', async () => {
+    await seed();
+    await assertFails(
+      updateDoc(doc(other(), 'capacities', POST), { interestCount: 250 })
+    );
+  });
+});
+
 // Sanity: the suite is worthless if it silently runs against no rules at all.
 test('the rules file under test is the real one', () => {
   assert.match(rules, /function ownerPostSnapshotsHonest\(\)/);

@@ -54,8 +54,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   CompanyModel? _userCompany;
   CapacityType? _activeTypeFilter;
   int _feedResetKey = 0;
-  // Active section for the desktop app-shell (sidebar stays pinned; content
-  // swaps in place, no back button). Mobile keeps drawer + pushed routes.
+  // Active section for the app-shell. Desktop: sidebar stays pinned, content
+  // swaps in place. Mobile: bottom-bar sections swap in place too; drawer-only
+  // sections still push. Held so the mobile drawer can be closed programmatically
+  // when a nav tap comes from it (see _navigate).
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   late _Section _section = widget.section;
 
   @override
@@ -99,44 +102,39 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     }
   }
 
-  Future<void> _navigateToMyCapacities() async {
-    final l = AppLocalizations.of(context);
-    final user = ref.read(authStateProvider).value;
-    if (user == null) return;
-    final company = await ref.read(companyServiceProvider).getCompanyByOwner(user.uid);
-    if (!mounted) return;
-    if (company == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(l.noCompanyFirst), backgroundColor: AppColors.error),
-      );
-      return;
-    }
-    Navigator.push(context, MaterialPageRoute(builder: (_) => MyCapacitiesScreen(company: company)));
-  }
+  // The sections that live in the mobile bottom nav bar (M9), in bar order.
+  // These swap IN PLACE on mobile so the persistent bar never pushes a page
+  // over itself; every other (drawer-only) section still opens as a pushed page.
+  static const List<_Section> _barSections = [
+    _Section.feed,
+    _Section.contacts,
+    _Section.messages,
+    _Section.requests,
+  ];
 
-  // Desktop: change the URL and let the route drive the pinned-shell content
-  // (see didUpdateWidget) — that's what makes the section survive a refresh and
-  // respond to browser back. Mobile: close the drawer and push a full route (a
-  // back button is natural on a phone, and a pushed route pops correctly).
+  // Both platforms drive the pinned/mobile shell by URL: context.go updates the
+  // route, which rebuilds this screen with the new section (see didUpdateWidget)
+  // and swaps the shell body in place — so a section survives refresh + browser
+  // back. On desktop every section works this way. On mobile the four bottom-bar
+  // sections do too (so the bar stays put); the remaining drawer-only sections
+  // keep opening as a pushed full page with a back button, which reads naturally
+  // on a phone. Either entry point closes the drawer first if it's open.
   void _navigate(_Section s) {
     final isMobile = MediaQuery.of(context).size.width < 768;
-    if (!isMobile) {
-      context.go(s.location);
+    if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
+      _scaffoldKey.currentState!.closeDrawer();
+    }
+    if (!isMobile || _barSections.contains(s)) {
+      if (s == _section && s == _Section.feed) {
+        _refreshLiveFeed(); // re-tapping Feed refreshes it rather than no-op
+      } else {
+        context.go(s.location);
+      }
       return;
     }
-    Navigator.of(context).maybePop(); // close the drawer
-    switch (s) {
-      case _Section.feed:
-        _refreshLiveFeed();
-        return;
-      case _Section.listings:
-        _navigateToMyCapacities();
-        return;
-      default:
-        final w = _screenFor(s, embedded: false);
-        if (w != null) {
-          Navigator.push(context, MaterialPageRoute(builder: (_) => w));
-        }
+    final w = _screenFor(s, embedded: false);
+    if (w != null) {
+      Navigator.push(context, MaterialPageRoute(builder: (_) => w));
     }
   }
 
@@ -276,11 +274,14 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         ),
       ],
     );
-    // Desktop shell content: the feed, or the selected section's screen in place.
-    final desktopContent = _section == _Section.feed
+    // Shell content, shared by both layouts: the feed (which carries its own top
+    // bar), or the selected section's screen embedded in place. On mobile the
+    // four bottom-bar sections swap in here too, so the bar stays put.
+    final shellContent = _section == _Section.feed
         ? feedColumn
         : (_screenFor(_section, embedded: true) ?? feedColumn);
     return Scaffold(
+      key: _scaffoldKey,
       backgroundColor: c.background,
       drawer: isMobile ? Drawer(backgroundColor: c.surface, width: 280, child: sidebar) : null,
       // Persistent across every section/device — posting and contacting are
@@ -290,13 +291,19 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         children: [
           const EmailVerificationBanner(),
           Expanded(
-            child: isMobile ? feedColumn : Row(children: [sidebar, Expanded(child: desktopContent)]),
+            child: isMobile ? shellContent : Row(children: [sidebar, Expanded(child: shellContent)]),
           ),
         ],
       ),
-      // Keep the quick-post FAB on the feed (and on mobile); hide it on desktop
-      // sub-sections so it doesn't overlap the embedded screen's own controls.
-      floatingActionButton: (isMobile || _section == _Section.feed)
+      // Mobile bottom nav for the core loop (M9): Feed · Kontakte · Nachrichten ·
+      // Anfragen. Desktop navigates from the pinned sidebar and has none.
+      bottomNavigationBar: isMobile
+          ? _MobileBottomNav(active: _section, onNavigate: _navigate)
+          : null,
+      // Quick-post FAB only on the feed now (both platforms render other sections
+      // in place, so a "post capacity" FAB floating over Nachrichten/Kontakte
+      // would be out of place; on the feed it's the primary action).
+      floatingActionButton: _section == _Section.feed
           ? FloatingActionButton.extended(
               onPressed: _navigateToCreateCapacity,
               backgroundColor: AppColors.primary,
@@ -548,6 +555,157 @@ class _SideBar extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+// ─── MOBILE BOTTOM NAV (M9) ────────────────────────────────────────────────────
+
+/// The phone-first core loop as a persistent bottom bar: Feed · Kontakte ·
+/// Nachrichten · Anfragen. Kontakte and Nachrichten carry the same
+/// needs-attention badges as their sidebar rows. Everything else stays in the
+/// drawer, reachable from the feed top bar's hamburger.
+class _MobileBottomNav extends ConsumerWidget {
+  final _Section active;
+  final void Function(_Section) onNavigate;
+  const _MobileBottomNav({required this.active, required this.onNavigate});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = AppColors.of(context);
+    final l = AppLocalizations.of(context);
+    final uid = ref.watch(authStateProvider).valueOrNull?.uid;
+    // Same badge math as the sidebar: pending received requests plus granted-
+    // but-unseen ones for Kontakte, total unread for Nachrichten.
+    final vermittlungCount = uid == null
+        ? 0
+        : (ref.watch(receivedRequestsProvider(uid)).valueOrNull ?? [])
+            .where((r) =>
+                r.status == 'pending' ||
+                (r.status == 'granted' && !r.seenByPoster))
+            .length;
+    final unreadMessages = uid == null ? 0 : ref.watch(totalUnreadProvider(uid));
+
+    final items = <_BottomNavSpec>[
+      _BottomNavSpec(_Section.feed, Icons.rss_feed_rounded, l.navLiveFeed),
+      _BottomNavSpec(_Section.contacts, Icons.handshake_outlined, l.navKontakte,
+          badge: vermittlungCount),
+      _BottomNavSpec(
+          _Section.messages, Icons.chat_bubble_outline, l.messagesNavLabel,
+          badge: unreadMessages),
+      _BottomNavSpec(_Section.requests, Icons.send_outlined, l.navAnfragen),
+    ];
+
+    return Material(
+      color: c.surface,
+      child: Container(
+        decoration: BoxDecoration(border: Border(top: BorderSide(color: c.border))),
+        child: SafeArea(
+          top: false,
+          child: SizedBox(
+            height: 60,
+            child: Row(
+              children: [
+                for (final it in items)
+                  Expanded(
+                    child: _BottomNavButton(
+                      spec: it,
+                      isActive: active == it.section,
+                      onTap: () => onNavigate(it.section),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BottomNavSpec {
+  final _Section section;
+  final IconData icon;
+  final String label;
+  final int badge;
+  const _BottomNavSpec(this.section, this.icon, this.label, {this.badge = 0});
+}
+
+/// One bottom-bar destination. InkWell (not a bare GestureDetector) so it
+/// carries a button role + focus node for the always-on semantics tree — see
+/// AGENTS.md.
+class _BottomNavButton extends StatelessWidget {
+  final _BottomNavSpec spec;
+  final bool isActive;
+  final VoidCallback onTap;
+  const _BottomNavButton(
+      {required this.spec, required this.isActive, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final color = isActive ? AppColors.primary : c.textTertiary;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 4),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _IconWithBadge(icon: spec.icon, color: color, badge: spec.badge),
+            const SizedBox(height: 3),
+            Text(
+              spec.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: isActive ? FontWeight.w800 : FontWeight.w600,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _IconWithBadge extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final int badge;
+  const _IconWithBadge(
+      {required this.icon, required this.color, this.badge = 0});
+
+  @override
+  Widget build(BuildContext context) {
+    final ic = Icon(icon, size: 23, color: color);
+    if (badge <= 0) return ic;
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        ic,
+        Positioned(
+          right: -9,
+          top: -5,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+            constraints: const BoxConstraints(minWidth: 16),
+            decoration: BoxDecoration(
+              color: AppColors.error,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              badge > 99 ? '99+' : '$badge',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  color: Colors.white, fontSize: 9.5, fontWeight: FontWeight.w900),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

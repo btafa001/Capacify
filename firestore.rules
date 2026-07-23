@@ -443,9 +443,24 @@ service cloud.firestore {
             && request.resource.data.get('posterSuspended', false) == resource.data.get('posterSuspended', false)
             && request.resource.data.get('dealNumber', null) == resource.data.get('dealNumber', null)
             && ownerPostSnapshotsHonest())
-        || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount'])
-        || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['favoriteCount']))
-        || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['interestCount']));
+        // Engagement counters double as social proof ("134 Aufrufe", the
+        // heart/interest tallies), so a single write may only STEP the counter it
+        // touches by its honest client delta — never set it to an arbitrary value.
+        // Without the delta pin, .hasOnly(['viewCount']) let an unauthenticated
+        // caller pin viewCount to 9999, and any signed-in user do the same to
+        // favoriteCount/interestCount on any post. view/interest only ever go
+        // +1 (capacity_service.increment*); favoriteCount goes ±1 because
+        // toggleFavorite decrements it on un-favourite. .get(..,0) tolerates the
+        // field being absent before its first bump (0 + 1 == 1).
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount'])
+            && request.resource.data.viewCount == resource.data.get('viewCount', 0) + 1)
+        || (isSignedIn()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['favoriteCount'])
+            && ( request.resource.data.favoriteCount == resource.data.get('favoriteCount', 0) + 1
+              || request.resource.data.favoriteCount == resource.data.get('favoriteCount', 0) - 1 ))
+        || (isSignedIn()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['interestCount'])
+            && request.resource.data.interestCount == resource.data.get('interestCount', 0) + 1);
       allow delete: if false;
     }
 
@@ -657,6 +672,14 @@ service cloud.firestore {
       );
       allow create: if isSignedIn()
         && request.auth.uid in request.resource.data.participants
+        // Exactly the two real parties — no more. The checks below confirm the
+        // requester and poster are BOTH present, but `in` alone can't stop a
+        // third uid riding along; once seeded into participants that third
+        // account passes every read/write rule here (all keyed off
+        // `uid in participants`). Pin the set to size 2 so membership is exactly
+        // {requester, poster}. The update rule already freezes participants, so
+        // this only needs enforcing at creation.
+        && request.resource.data.participants.size() == 2
         && exists(/databases/$(database)/documents/contact_requests/$(chatId))
         && get(/databases/$(database)/documents/contact_requests/$(chatId)).data.status == 'granted'
         && get(/databases/$(database)/documents/contact_requests/$(chatId)).data.requesterCompanyId in request.resource.data.participants
@@ -928,6 +951,31 @@ service cloud.firestore {
         && resource.data.recipientId == request.auth.uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
       allow delete: if false;
+    }
+
+    // ─── CLIENT ERRORS (write-only crash sink) ───
+    // Uncaught client errors land here (see ErrorService / M6). Append-only: no
+    // client ever reads or mutates them — the founder triages from the console
+    // (Admin bypasses rules). Create is intentionally open to signed-out callers
+    // too (errors happen on public pages, pre-login), so the real gate is App
+    // Check enforcement — the write must come from a genuine app instance. The
+    // shape is pinned and the free-text fields length-capped so the collection
+    // can't be turned into an arbitrary, unbounded write sink.
+    match /clientErrors/{errorId} {
+      allow read, update, delete: if false;
+      allow create: if request.resource.data.keys().hasOnly(
+             ['message', 'stack', 'context', 'uid', 'url',
+              'userAgent', 'appVersion', 'createdAt'])
+        && request.resource.data.message is string
+        && request.resource.data.message.size() <= 2000
+        && request.resource.data.get('stack', '') is string
+        && request.resource.data.get('stack', '').size() <= 8000
+        && request.resource.data.get('context', '') is string
+        && request.resource.data.get('context', '').size() <= 200
+        && request.resource.data.get('url', '') is string
+        && request.resource.data.get('url', '').size() <= 500
+        && request.resource.data.get('userAgent', '') is string
+        && request.resource.data.get('userAgent', '').size() <= 500;
     }
 
     // Everything else (including the unused legacy `favorites` collection)

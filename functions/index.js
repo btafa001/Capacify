@@ -302,14 +302,68 @@ exports.uploadCompanyLogo = onRequest(async (req, res) => {
 exports.purgeUserData = onCall(async (req) => {
   if (!req.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
   const uid = req.auth.uid;
+  const DELETED_LABEL = 'Gelöschtes Unternehmen';
 
+  // 1) Chat threads + their messages. recursiveDelete because messages are a
+  //    client-immutable subcollection with no other home — see the explicit
+  //    product-decision note in privacy_service.deleteMyAccount about this
+  //    hard-deleting the counterparty's copy too.
   const chats = await db().collection('chats').where('participants', 'array-contains', uid).get();
-  let deleted = 0;
+  let deletedChats = 0;
   for (const doc of chats.docs) {
     await db().recursiveDelete(doc.ref);
-    deleted++;
+    deletedChats++;
   }
-  return { deletedChats: deleted };
+
+  // Buffer the remaining writes, then flush in <500-op batches (Firestore's
+  // hard batch limit) so a heavy account can't blow the limit in one commit.
+  const ops = [];
+  const flush = async () => {
+    while (ops.length) {
+      const batch = db().batch();
+      for (const op of ops.splice(0, 450)) op(batch);
+      await batch.commit();
+    }
+  };
+
+  // 2) Anonymise the requester name denormalised onto contact_requests the user
+  //    SENT. The requests themselves are retained (marketplace history, like
+  //    posts), but must stop carrying the deleted company's name — the client
+  //    can't do this itself (the requester has no update path for that field).
+  const sent = await db().collection('contact_requests').where('requesterCompanyId', '==', uid).get();
+  for (const d of sent.docs) {
+    ops.push((b) => b.update(d.ref, { requesterCompanyName: DELETED_LABEL }));
+  }
+
+  // 3a) The user's OWN notification inbox — their personal data, deleted.
+  const inbox = await db().collection('notifications').where('recipientId', '==', uid).get();
+  const inboxIds = new Set(inbox.docs.map((d) => d.id));
+  for (const d of inbox.docs) {
+    ops.push((b) => b.delete(d.ref));
+  }
+  // 3b) Notifications ABOUT the user sitting in OTHER people's inboxes carry the
+  //     deleted company's name (companyName/companyId) — anonymise rather than
+  //     delete, so the recipient keeps a consistent record of a real event.
+  //     Skip any already queued for deletion in 3a (a self-notification would
+  //     otherwise be updated after delete → NOT_FOUND).
+  const about = await db().collection('notifications').where('companyId', '==', uid).get();
+  const aboutOthers = about.docs.filter((d) => !inboxIds.has(d.id));
+  for (const d of aboutOthers) {
+    ops.push((b) => b.update(d.ref, { companyName: DELETED_LABEL, companyId: '' }));
+  }
+
+  // 4) The credits wallet (credits/{uid}) — client delete is rules-forbidden.
+  //    delete() is idempotent, so a user who never had a wallet is a no-op.
+  ops.push((b) => b.delete(db().collection('credits').doc(uid)));
+
+  await flush();
+
+  return {
+    deletedChats,
+    anonymisedSentRequests: sent.size,
+    deletedNotifications: inbox.size,
+    anonymisedNotifications: aboutOthers.length,
+  };
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
